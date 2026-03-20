@@ -10,9 +10,16 @@ def _obter_base_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _obter_bundle_dir() -> str:
+    """Resolve o diretório extraído pelo PyInstaller quando disponível."""
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
 # Diretórios do projeto
 BASE_DIR = _obter_base_dir()
+BUNDLE_DIR = _obter_bundle_dir()
 ENV_PATH = os.path.join(BASE_DIR, ".env")
+BUNDLED_ENV_PATH = os.path.join(BUNDLE_DIR, ".env")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PDFS_DIR = os.path.join(DATA_DIR, "pdfs")
 VECTOR_STORES_DIR = os.path.join(DATA_DIR, "vector_stores")

@@ -1,18 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 
+project_dir = Path.cwd()
 datas = []
 for pacote in ("docx", "pptx", "PIL"):
     datas += collect_data_files(pacote)
+
+env_file = project_dir / ".env"
+if env_file.exists():
+    datas.append((str(env_file), "."))
 
 binaries = collect_dynamic_libs("faiss")
 
 hiddenimports = []
 for pacote in (
     "langchain_google_genai",
-    "langchain_community",
+    "langchain_community.vectorstores",
     "google.ai.generativelanguage",
 ):
     hiddenimports += collect_submodules(pacote)

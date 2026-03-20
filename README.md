@@ -65,7 +65,9 @@ python main.py
 .\build_exe.bat
 ```
 
-O binário final fica em `dist\AtendimentoBot.exe`. Deixe o `.env` na mesma pasta do executável.
+O binário final fica em `dist\AtendimentoBot.exe`.
+
+Se existir um `.env` na raiz do projeto durante o build, ele será embutido no `.exe`. Nesse caso, basta dar dois cliques em `AtendimentoBot.exe` para subir o bot.
 
 ## Uso
 
