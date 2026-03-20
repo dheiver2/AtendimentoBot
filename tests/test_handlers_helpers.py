@@ -28,13 +28,49 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.user_data, {"persistir": "sim"})
 
-    def test_teclado_painel_expoe_oito_acoes(self):
-        teclado = handlers._teclado_painel()
+    def test_teclado_painel_expoe_doze_acoes(self):
+        teclado = handlers._teclado_painel({"ativo": 1})
         textos = [botao.text for linha in teclado.inline_keyboard for botao in linha]
 
-        self.assertEqual(len(textos), 8)
+        self.assertEqual(len(textos), 12)
         self.assertIn("📄 Upload", textos)
+        self.assertIn("❔ FAQ", textos)
+        self.assertIn("🕒 Horário", textos)
+        self.assertIn("🆘 Fallback", textos)
+        self.assertIn("⏸️ Pausar", textos)
         self.assertIn("♻️ Reset", textos)
+
+    def test_teclado_painel_muda_botao_quando_agente_esta_pausado(self):
+        teclado = handlers._teclado_painel({"ativo": 0})
+        textos = [botao.text for linha in teclado.inline_keyboard for botao in linha]
+
+        self.assertIn("▶️ Ativar", textos)
+
+    def test_teclado_faqs_renderiza_acoes_por_item(self):
+        teclado = handlers._teclado_faqs(
+            [
+                {"id": 10, "pergunta": "Qual é o horário de atendimento?"},
+                {"id": 20, "pergunta": "Vocês atendem via WhatsApp?"},
+            ]
+        )
+        textos = [botao.text for linha in teclado.inline_keyboard for botao in linha]
+        callbacks = [botao.callback_data for linha in teclado.inline_keyboard for botao in linha]
+
+        self.assertIn("➕ Nova FAQ", textos)
+        self.assertIn("🧹 Limpar FAQs", textos)
+        self.assertIn("faq_excluir:10", callbacks)
+        self.assertIn("faq_excluir:20", callbacks)
+
+    def test_busca_resposta_faq_aceita_variacao_simples(self):
+        resposta = handlers._buscar_resposta_faq(
+            "qual o horario de atendimento",
+            [
+                {"pergunta": "Qual é o horário de atendimento?", "resposta": "Seg a Sex"},
+                {"pergunta": "Tem WhatsApp?", "resposta": "Sim"},
+            ],
+        )
+
+        self.assertEqual(resposta, "Seg a Sex")
 
     def test_teclado_documentos_renderiza_acoes_por_arquivo(self):
         teclado = handlers._teclado_documentos(

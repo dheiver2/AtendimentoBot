@@ -1,7 +1,9 @@
 """Handlers do bot Telegram — fluxo de onboarding, configuração e teste."""
+from difflib import SequenceMatcher
 import logging
 import os
 import shutil
+import unicodedata
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -15,13 +17,17 @@ from telegram.ext import (
 
 from database import (
     criar_empresa,
+    criar_faq,
     obter_empresa_por_usuario,
     atualizar_empresa,
     excluir_empresa_com_dados,
     excluir_documento,
+    excluir_faq,
+    limpar_faqs,
     obter_documento_por_id,
     registrar_documento,
     listar_documentos,
+    listar_faqs,
     registrar_conversa,
 )
 from bot_profile_photo import (
@@ -53,7 +59,11 @@ logger = logging.getLogger(__name__)
     AGUARDANDO_DOCUMENTO,
     EDITANDO_CAMPO,
     AGUARDANDO_IMAGEM_BOT,
-) = range(7)
+    AGUARDANDO_HORARIO,
+    AGUARDANDO_FALLBACK,
+    AGUARDANDO_FAQ_PERGUNTA,
+    AGUARDANDO_FAQ_RESPOSTA,
+) = range(11)
 
 
 def _limpar_estado_usuario(context: ContextTypes.DEFAULT_TYPE):
@@ -68,6 +78,8 @@ def _limpar_estado_usuario(context: ContextTypes.DEFAULT_TYPE):
         "aguardando_imagem_bot",
         "campo_editando",
         "campo_editando_nome",
+        "empresa_faq_id",
+        "faq_pergunta",
     ]:
         context.user_data.pop(key, None)
 
@@ -94,8 +106,9 @@ async def _enviar_preview_imagem_empresa(
         await mensagem.reply_photo(photo=arquivo, caption=legenda)
 
 
-def _teclado_painel() -> InlineKeyboardMarkup:
+def _teclado_painel(empresa: dict | None = None) -> InlineKeyboardMarkup:
     """Retorna o teclado inline principal do painel."""
+    botao_ativo = "⏸️ Pausar" if (empresa or {}).get("ativo", 1) else "▶️ Ativar"
     return InlineKeyboardMarkup(
         [
             [
@@ -104,6 +117,14 @@ def _teclado_painel() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("🖼️ Imagem", callback_data="painel_imagem"),
+                InlineKeyboardButton("❔ FAQ", callback_data="painel_faq"),
+            ],
+            [
+                InlineKeyboardButton("🕒 Horário", callback_data="painel_horario"),
+                InlineKeyboardButton("🆘 Fallback", callback_data="painel_fallback"),
+            ],
+            [
+                InlineKeyboardButton(botao_ativo, callback_data="painel_ativo_toggle"),
                 InlineKeyboardButton("⚙️ Editar", callback_data="painel_editar"),
             ],
             [
@@ -155,6 +176,143 @@ def _teclado_documentos(documentos: list[dict]) -> InlineKeyboardMarkup:
         )
 
     return InlineKeyboardMarkup(botoes)
+
+
+def _rotulo_faq(pergunta: str, indice: int) -> str:
+    """Gera um rótulo curto para uma FAQ na interface."""
+    pergunta = pergunta.strip()
+    if len(pergunta) > 30:
+        pergunta = f"{pergunta[:27]}..."
+    return f"{indice}. {pergunta}"
+
+
+def _teclado_faqs(faqs: list[dict]) -> InlineKeyboardMarkup:
+    """Retorna o teclado inline de gestão das FAQs."""
+    botoes = [
+        [
+            InlineKeyboardButton("➕ Nova FAQ", callback_data="faq_add"),
+            InlineKeyboardButton("🔄 Atualizar", callback_data="faq_refresh"),
+        ],
+        [
+            InlineKeyboardButton("🧹 Limpar FAQs", callback_data="faq_limpar"),
+            InlineKeyboardButton("⬅️ Painel", callback_data="faq_painel"),
+        ],
+    ]
+
+    for indice, faq in enumerate(faqs, 1):
+        botoes.append(
+            [
+                InlineKeyboardButton(_rotulo_faq(faq["pergunta"], indice), callback_data="faq_refresh"),
+                InlineKeyboardButton(f"🗑 {indice}", callback_data=f"faq_excluir:{faq['id']}"),
+            ]
+        )
+
+    return InlineKeyboardMarkup(botoes)
+
+
+def _normalizar_texto(texto: str) -> str:
+    """Normaliza texto para comparações simples no fluxo de FAQ e fallback."""
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(char for char in texto if not unicodedata.combining(char))
+    return " ".join(texto.lower().strip().split())
+
+
+def _buscar_resposta_faq(pergunta: str, faqs: list[dict]) -> str | None:
+    """Busca a resposta mais provável entre FAQs cadastradas."""
+    pergunta_normalizada = _normalizar_texto(pergunta)
+    melhor_resposta = None
+    melhor_score = 0.0
+
+    for faq in faqs:
+        pergunta_faq = _normalizar_texto(faq["pergunta"])
+        if not pergunta_faq:
+            continue
+
+        if (
+            pergunta_normalizada == pergunta_faq
+            or pergunta_normalizada in pergunta_faq
+            or pergunta_faq in pergunta_normalizada
+        ):
+            return faq["resposta"]
+
+        score = SequenceMatcher(None, pergunta_normalizada, pergunta_faq).ratio()
+        if score > melhor_score:
+            melhor_score = score
+            melhor_resposta = faq["resposta"]
+
+    if melhor_score >= 0.82:
+        return melhor_resposta
+
+    return None
+
+
+def _detectar_pedido_humano(pergunta: str) -> bool:
+    """Detecta pedidos explícitos de encaminhamento para humano/contato."""
+    pergunta_normalizada = _normalizar_texto(pergunta)
+    gatilhos = [
+        "falar com atendente",
+        "falar com humano",
+        "atendimento humano",
+        "quero um atendente",
+        "quero falar com alguem",
+        "telefone",
+        "whatsapp",
+        "contato",
+    ]
+    return any(gatilho in pergunta_normalizada for gatilho in gatilhos)
+
+
+def _detectar_pergunta_horario(pergunta: str) -> bool:
+    """Detecta perguntas sobre horário de atendimento."""
+    pergunta_normalizada = _normalizar_texto(pergunta)
+    gatilhos = ["horario", "atendimento", "aberto", "funciona", "expediente"]
+    return any(gatilho in pergunta_normalizada for gatilho in gatilhos)
+
+
+def _formatar_resposta_pausado(empresa: dict) -> str:
+    """Monta a resposta padrão quando o agente está pausado."""
+    linhas = ["⏸️ Seu agente está pausado no momento."]
+    if empresa.get("horario_atendimento"):
+        linhas.append(f"🕒 Horário informado: {empresa['horario_atendimento']}")
+    if empresa.get("fallback_contato"):
+        linhas.append(f"🆘 Contato humano: {empresa['fallback_contato']}")
+    return "\n".join(linhas)
+
+
+def _formatar_resposta_sem_base(empresa: dict) -> str:
+    """Monta a resposta padrão quando ainda não há base carregada."""
+    linhas = [
+        "📄 Seu agente ainda não tem base de conhecimento.",
+        "Envie documentos neste chat ou use /upload para concluir a configuração.",
+    ]
+    if empresa.get("horario_atendimento"):
+        linhas.append(f"🕒 Horário informado: {empresa['horario_atendimento']}")
+    if empresa.get("fallback_contato"):
+        linhas.append(f"🆘 Contato humano: {empresa['fallback_contato']}")
+    return "\n".join(linhas)
+
+
+def _instrucoes_operacionais_empresa(empresa: dict) -> str:
+    """Adiciona horário/fallback às instruções do agente quando configurados."""
+    extras = []
+    if empresa.get("horario_atendimento"):
+        extras.append(f"Horário de atendimento da empresa: {empresa['horario_atendimento']}.")
+    if empresa.get("fallback_contato"):
+        extras.append(
+            "Se o usuário pedir atendimento humano ou você não tiver a informação, "
+            f"oriente este contato: {empresa['fallback_contato']}."
+        )
+
+    if not extras:
+        return empresa["instrucoes"]
+
+    return f"{empresa['instrucoes']}\n\nINFORMAÇÕES OPERACIONAIS:\n- " + "\n- ".join(extras)
+
+
+async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, resposta: str):
+    """Responde ao usuário e registra a conversa no histórico."""
+    await update.message.reply_text(resposta)
+    await registrar_conversa(empresa["id"], update.effective_user.id, pergunta, resposta)
 
 
 async def _editar_ou_responder(update: Update, texto: str, reply_markup: InlineKeyboardMarkup | None = None):
@@ -263,6 +421,11 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/painel — Painel de gerenciamento\n"
         "/upload — Entrar no modo de envio de documentos\n"
         "/imagem — Atualizar a imagem do agente\n"
+        "/pausar — Pausar o agente\n"
+        "/ativar — Reativar o agente\n"
+        "/horario — Configurar horário de atendimento\n"
+        "/fallback — Configurar contato humano de fallback\n"
+        "/faq — Gerenciar perguntas frequentes\n"
         "/documentos — Gerenciar a base de conhecimento\n"
         "/editar — Editar configurações do bot\n"
         "/reset — Apagar a configuração atual e começar de novo\n"
@@ -270,6 +433,8 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Você pode enviar documentos diretamente neste chat a qualquer momento.\n"
         f"Formatos aceitos: {formatos}.\n"
         f"Para /imagem, envie foto do Telegram ou imagem em: {formatos_imagem}.\n"
+        "Use /horario e /fallback para definir regras operacionais do seu agente.\n"
+        "Use /faq para cadastrar respostas rápidas antes mesmo de subir documentos.\n"
         "Use /documentos para reprocessar, excluir arquivos e reconstruir a base.\n"
         "Use o botão Menu do Telegram ou /painel para navegar mais rápido.\n"
         "A imagem enviada em /imagem fica vinculada só ao seu agente.\n"
@@ -640,6 +805,258 @@ async def receber_imagem_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return AGUARDANDO_IMAGEM_BOT
 
 
+async def _definir_status_agente(update: Update, context: ContextTypes.DEFAULT_TYPE, ativo: bool):
+    """Ativa ou pausa o agente do usuário."""
+    mensagem = update.effective_message
+    user_id = update.effective_user.id
+    empresa = await obter_empresa_por_usuario(user_id)
+    if not empresa:
+        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return
+
+    ativo_atual = bool(empresa.get("ativo", 1))
+    if ativo_atual == ativo:
+        texto = (
+            "ℹ️ Seu agente já está ativo."
+            if ativo
+            else "ℹ️ Seu agente já está pausado."
+        )
+        await mensagem.reply_text(texto)
+        return
+
+    await atualizar_empresa(empresa["id"], ativo=1 if ativo else 0)
+    texto = (
+        "▶️ Seu agente foi ativado e já pode voltar a responder neste chat."
+        if ativo
+        else "⏸️ Seu agente foi pausado. Enquanto estiver pausado, as pessoas verão apenas sua orientação operacional."
+    )
+    await mensagem.reply_text(texto)
+
+    if update.callback_query:
+        await cmd_painel(update, context)
+
+
+async def cmd_pausar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pausa o agente do usuário."""
+    await _definir_status_agente(update, context, ativo=False)
+
+
+async def cmd_ativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ativa o agente do usuário."""
+    await _definir_status_agente(update, context, ativo=True)
+
+
+async def cmd_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia ou aplica a configuração de horário de atendimento."""
+    mensagem = update.effective_message
+    user_id = update.effective_user.id
+    empresa = await obter_empresa_por_usuario(user_id)
+    if not empresa:
+        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
+    if context.args:
+        acao = context.args[0].lower()
+        if acao in {"limpar", "remover", "apagar"}:
+            await atualizar_empresa(empresa["id"], horario_atendimento="")
+            await mensagem.reply_text("✅ O horário de atendimento foi removido.")
+            return ConversationHandler.END
+
+        horario = " ".join(context.args).strip()
+        await atualizar_empresa(empresa["id"], horario_atendimento=horario)
+        await mensagem.reply_text(f"✅ Horário atualizado para: {horario}")
+        return ConversationHandler.END
+
+    horario_atual = empresa.get("horario_atendimento") or "Não configurado"
+    await mensagem.reply_text(
+        "🕒 Horário de atendimento\n\n"
+        f"Atual: {horario_atual}\n\n"
+        "Envie o texto completo do horário do seu atendimento.\n"
+        "Exemplo: Seg a Sex, 08h às 18h.\n"
+        "Se quiser remover, use /horario limpar."
+    )
+    return AGUARDANDO_HORARIO
+
+
+async def receber_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recebe o novo horário de atendimento do agente."""
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await update.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
+    horario = update.message.text.strip()
+    await atualizar_empresa(empresa["id"], horario_atendimento=horario)
+    await update.message.reply_text(f"✅ Horário atualizado para: {horario}")
+    return ConversationHandler.END
+
+
+async def cmd_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia ou aplica a configuração do fallback para atendimento humano."""
+    mensagem = update.effective_message
+    user_id = update.effective_user.id
+    empresa = await obter_empresa_por_usuario(user_id)
+    if not empresa:
+        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
+    if context.args:
+        acao = context.args[0].lower()
+        if acao in {"limpar", "remover", "apagar"}:
+            await atualizar_empresa(empresa["id"], fallback_contato="")
+            await mensagem.reply_text("✅ O fallback para atendimento humano foi removido.")
+            return ConversationHandler.END
+
+        fallback = " ".join(context.args).strip()
+        await atualizar_empresa(empresa["id"], fallback_contato=fallback)
+        await mensagem.reply_text(f"✅ Fallback atualizado para: {fallback}")
+        return ConversationHandler.END
+
+    fallback_atual = empresa.get("fallback_contato") or "Não configurado"
+    await mensagem.reply_text(
+        "🆘 Fallback para humano\n\n"
+        f"Atual: {fallback_atual}\n\n"
+        "Envie o contato que deve ser usado quando o usuário quiser atendimento humano.\n"
+        "Exemplo: WhatsApp (11) 99999-9999 ou suporte@empresa.com.\n"
+        "Se quiser remover, use /fallback limpar."
+    )
+    return AGUARDANDO_FALLBACK
+
+
+async def receber_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recebe o novo contato de fallback do agente."""
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await update.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
+    fallback = update.message.text.strip()
+    await atualizar_empresa(empresa["id"], fallback_contato=fallback)
+    await update.message.reply_text(f"✅ Fallback atualizado para: {fallback}")
+    return ConversationHandler.END
+
+
+async def _mostrar_faqs(update: Update, empresa: dict):
+    """Mostra a lista de FAQs da empresa com ações de gestão."""
+    faqs = await listar_faqs(empresa["id"])
+    if not faqs:
+        await _editar_ou_responder(
+            update,
+            (
+                f"❔ FAQs — {empresa['nome']}\n\n"
+                "Nenhuma FAQ cadastrada ainda.\n"
+                "Use /faq adicionar ou o botão abaixo para cadastrar respostas rápidas."
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("➕ Nova FAQ", callback_data="faq_add"),
+                        InlineKeyboardButton("⬅️ Painel", callback_data="faq_painel"),
+                    ]
+                ]
+            ),
+        )
+        return
+
+    linhas = [
+        f"❔ FAQs — {empresa['nome']}\n",
+        "Use o botão abaixo para cadastrar mais respostas rápidas ou excluir FAQs existentes.\n",
+    ]
+    for indice, faq in enumerate(faqs, 1):
+        linhas.append(f"{indice}. {faq['pergunta']}")
+
+    await _editar_ou_responder(
+        update,
+        "\n".join(linhas),
+        reply_markup=_teclado_faqs(faqs),
+    )
+
+
+async def _iniciar_cadastro_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia a conversa de cadastro de uma nova FAQ."""
+    mensagem = update.effective_message
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
+    context.user_data["empresa_faq_id"] = empresa["id"]
+    context.user_data.pop("faq_pergunta", None)
+    await mensagem.reply_text(
+        "➕ Nova FAQ\n\n"
+        "Envie agora a pergunta que deve virar uma FAQ.\n"
+        "Exemplo: Qual é o prazo de entrega?"
+    )
+    return AGUARDANDO_FAQ_PERGUNTA
+
+
+async def cmd_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gerencia as FAQs da empresa."""
+    mensagem = update.effective_message
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
+    if context.args:
+        acao = context.args[0].lower()
+        if acao in {"adicionar", "nova", "novo"}:
+            return await _iniciar_cadastro_faq(update, context)
+
+        if acao in {"limpar", "apagar"}:
+            removidas = await limpar_faqs(empresa["id"])
+            await mensagem.reply_text(f"🧹 {removidas} FAQ(s) removida(s).")
+            return ConversationHandler.END
+
+        if acao in {"remover", "excluir"}:
+            if len(context.args) < 2 or not context.args[1].isdigit():
+                await mensagem.reply_text("⚠️ Use /faq remover <id> para excluir uma FAQ específica.")
+                return ConversationHandler.END
+
+            removida = await excluir_faq(empresa["id"], int(context.args[1]))
+            if removida:
+                await mensagem.reply_text("🗑 FAQ removida com sucesso.")
+            else:
+                await mensagem.reply_text("⚠️ FAQ não encontrada.")
+            return ConversationHandler.END
+
+    await _mostrar_faqs(update, empresa)
+    return ConversationHandler.END
+
+
+async def receber_faq_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recebe a pergunta da nova FAQ."""
+    if not context.user_data.get("empresa_faq_id"):
+        await update.message.reply_text("❌ Erro interno. Use /faq novamente.")
+        return ConversationHandler.END
+
+    context.user_data["faq_pergunta"] = update.message.text.strip()
+    await update.message.reply_text(
+        "📝 Agora envie a resposta que o agente deve usar para essa pergunta."
+    )
+    return AGUARDANDO_FAQ_RESPOSTA
+
+
+async def receber_faq_resposta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recebe a resposta da nova FAQ e salva no banco."""
+    empresa_id = context.user_data.get("empresa_faq_id")
+    pergunta = context.user_data.get("faq_pergunta")
+    if not empresa_id or not pergunta:
+        await update.message.reply_text("❌ Erro interno. Use /faq novamente.")
+        return ConversationHandler.END
+
+    resposta = update.message.text.strip()
+    await criar_faq(empresa_id, pergunta, resposta)
+    context.user_data.pop("empresa_faq_id", None)
+    context.user_data.pop("faq_pergunta", None)
+
+    await update.message.reply_text("✅ FAQ cadastrada com sucesso.")
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if empresa:
+        await _mostrar_faqs(update, empresa)
+    return ConversationHandler.END
+
+
 async def painel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Atualiza o painel principal pelo botão inline."""
     await update.callback_query.answer()
@@ -676,6 +1093,40 @@ async def painel_imagem_callback(update: Update, context: ContextTypes.DEFAULT_T
     return await cmd_imagem(update, context)
 
 
+async def painel_faq_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Abre a gestão de FAQ a partir do painel."""
+    await update.callback_query.answer()
+    return await cmd_faq(update, context)
+
+
+async def faq_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia o cadastro de FAQ a partir do teclado inline."""
+    await update.callback_query.answer()
+    return await _iniciar_cadastro_faq(update, context)
+
+
+async def painel_horario_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia a configuração de horário a partir do painel."""
+    await update.callback_query.answer()
+    return await cmd_horario(update, context)
+
+
+async def painel_fallback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia a configuração de fallback a partir do painel."""
+    await update.callback_query.answer()
+    return await cmd_fallback(update, context)
+
+
+async def painel_ativo_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alterna o estado ativo/pausado do agente pelo painel."""
+    await update.callback_query.answer()
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await update.effective_message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return
+    await _definir_status_agente(update, context, ativo=not bool(empresa.get("ativo", 1)))
+
+
 async def painel_reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia o reset a partir do painel."""
     await update.callback_query.answer()
@@ -702,18 +1153,35 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     docs = await listar_documentos(empresa["id"])
+    faqs = await listar_faqs(empresa["id"])
     tem_docs = empresa_tem_documentos(empresa["id"])
     tem_imagem = empresa_tem_imagem(empresa["id"])
+    agente_ativo = bool(empresa.get("ativo", 1))
 
-    status_emoji = "🟢" if tem_docs else "🔴"
-    status_texto = "Pronto para teste" if tem_docs else "Sem documentos — envie arquivos no chat ou use /upload"
+    if not agente_ativo:
+        status_emoji = "⏸️"
+        status_texto = "Pausado"
+    elif tem_docs:
+        status_emoji = "🟢"
+        status_texto = "Pronto para teste"
+    else:
+        status_emoji = "🟡"
+        status_texto = "Sem documentos — envie arquivos no chat ou use /upload"
+
     imagem_texto = "Configurada" if tem_imagem else "Não configurada"
+    horario_texto = "Configurado" if empresa.get("horario_atendimento") else "Não configurado"
+    fallback_texto = "Configurado" if empresa.get("fallback_contato") else "Não configurado"
+    atendimento_texto = "Ativo" if agente_ativo else "Pausado"
 
     texto = (
         f"📊 Painel — {empresa['nome']}\n\n"
         f"🤖 Assistente: {empresa['nome_bot']}\n"
         f"👋 Saudação: {empresa['saudacao']}\n"
+        f"⏱️ Atendimento: {atendimento_texto}\n"
         f"🖼️ Imagem: {imagem_texto}\n"
+        f"🕒 Horário: {horario_texto}\n"
+        f"🆘 Fallback: {fallback_texto}\n"
+        f"❔ FAQs: {len(faqs)}\n"
         f"📄 Documentos: {len(docs)}\n"
         f"{status_emoji} Status: {status_texto}\n\n"
         f"Use os botões abaixo ou o Menu do Telegram para navegar.\n\n"
@@ -721,13 +1189,13 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if update.callback_query:
         try:
-            await update.callback_query.edit_message_text(texto, reply_markup=_teclado_painel())
+            await update.callback_query.edit_message_text(texto, reply_markup=_teclado_painel(empresa))
         except BadRequest as e:
             if "message is not modified" not in str(e).lower():
                 raise
         return
 
-    await mensagem.reply_text(texto, reply_markup=_teclado_painel())
+    await mensagem.reply_text(texto, reply_markup=_teclado_painel(empresa))
 
 
 async def cmd_documentos(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -894,6 +1362,56 @@ async def docs_excluir_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("❌ Não foi possível excluir esse documento agora. Tente novamente.")
 
 
+async def faq_painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Volta ao painel principal a partir da gestão de FAQ."""
+    await update.callback_query.answer()
+    await cmd_painel(update, context)
+
+
+async def faq_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Atualiza a visão de FAQ da empresa."""
+    await update.callback_query.answer()
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await update.effective_message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return
+    await _mostrar_faqs(update, empresa)
+
+
+async def faq_excluir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Exclui uma FAQ da empresa."""
+    query = update.callback_query
+    await query.answer()
+
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return
+
+    faq_id = int(query.data.split(":", 1)[1])
+    removida = await excluir_faq(empresa["id"], faq_id)
+    if removida:
+        await query.message.reply_text("🗑 FAQ removida com sucesso.")
+    else:
+        await query.message.reply_text("⚠️ FAQ não encontrada.")
+    await _mostrar_faqs(update, empresa)
+
+
+async def faq_limpar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove todas as FAQs da empresa."""
+    query = update.callback_query
+    await query.answer()
+
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return
+
+    removidas = await limpar_faqs(empresa["id"])
+    await query.message.reply_text(f"🧹 {removidas} FAQ(s) removida(s).")
+    await _mostrar_faqs(update, empresa)
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra o status atual do bot."""
     mensagem = update.effective_message
@@ -905,15 +1423,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tem_docs = empresa_tem_documentos(empresa["id"])
     docs = await listar_documentos(empresa["id"])
+    faqs = await listar_faqs(empresa["id"])
     tem_imagem = empresa_tem_imagem(empresa["id"])
     imagem_texto = "Configurada" if tem_imagem else "Não configurada"
+    atendimento_texto = "Ativo" if bool(empresa.get("ativo", 1)) else "Pausado"
+    horario_texto = empresa.get("horario_atendimento") or "Não configurado"
+    fallback_texto = empresa.get("fallback_contato") or "Não configurado"
 
     if tem_docs:
         texto = (
             f"🟢 Agente CONFIGURADO\n\n"
             f"Empresa: {empresa['nome']}\n"
             f"Assistente: {empresa['nome_bot']}\n"
+            f"Atendimento: {atendimento_texto}\n"
             f"Imagem: {imagem_texto}\n"
+            f"Horário: {horario_texto}\n"
+            f"Fallback: {fallback_texto}\n"
+            f"FAQs: {len(faqs)}\n"
             f"Documentos indexados: {len(docs)}\n\n"
             f"Seu agente já pode ser testado neste chat."
         )
@@ -921,7 +1447,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto = (
             f"🟡 Agente INCOMPLETO\n\n"
             f"Empresa: {empresa['nome']}\n"
+            f"Atendimento: {atendimento_texto}\n"
             f"Imagem: {imagem_texto}\n"
+            f"Horário: {horario_texto}\n"
+            f"Fallback: {fallback_texto}\n"
+            f"FAQs: {len(faqs)}\n"
             f"Nenhum documento carregado.\n\n"
             f"Envie documentos neste chat ou use /upload para concluir a configuração."
         )
@@ -1033,11 +1563,37 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    if not empresa_tem_documentos(empresa["id"]):
-        await update.message.reply_text(
-            "📄 Seu agente ainda não tem base de conhecimento.\n"
-            "Envie documentos neste chat ou use /upload para concluir a configuração."
+    faqs = await listar_faqs(empresa["id"])
+
+    if not bool(empresa.get("ativo", 1)):
+        await _responder_e_registrar(update, empresa, pergunta, _formatar_resposta_pausado(empresa))
+        return
+
+    if empresa.get("fallback_contato") and _detectar_pedido_humano(pergunta):
+        await _responder_e_registrar(
+            update,
+            empresa,
+            pergunta,
+            f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}",
         )
+        return
+
+    if empresa.get("horario_atendimento") and _detectar_pergunta_horario(pergunta):
+        await _responder_e_registrar(
+            update,
+            empresa,
+            pergunta,
+            f"🕒 Horário de atendimento: {empresa['horario_atendimento']}",
+        )
+        return
+
+    resposta_faq = _buscar_resposta_faq(pergunta, faqs)
+    if resposta_faq:
+        await _responder_e_registrar(update, empresa, pergunta, resposta_faq)
+        return
+
+    if not empresa_tem_documentos(empresa["id"]):
+        await _responder_e_registrar(update, empresa, pergunta, _formatar_resposta_sem_base(empresa))
         return
 
     # Envia indicador de "digitando"
@@ -1048,14 +1604,22 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
             empresa_id=empresa["id"],
             nome_empresa=empresa["nome"],
             nome_bot=empresa["nome_bot"],
-            instrucoes=empresa["instrucoes"],
+            instrucoes=_instrucoes_operacionais_empresa(empresa),
             pergunta=pergunta,
         )
 
-        await update.message.reply_text(resposta)
+        resposta_normalizada = _normalizar_texto(resposta)
+        if empresa.get("fallback_contato") and (
+            "nao tenho essa informacao" in resposta_normalizada
+            or "nao tenho documentos" in resposta_normalizada
+            or "nao estiver no contexto" in resposta_normalizada
+        ):
+            resposta = (
+                f"{resposta}\n\n"
+                f"Se preferir, fale com a equipe em: {empresa['fallback_contato']}"
+            )
 
-        # Registra conversa de teste do usuário
-        await registrar_conversa(empresa["id"], user_id, pergunta, resposta)
+        await _responder_e_registrar(update, empresa, pergunta, resposta)
 
     except Exception as e:
         logger.error(f"Erro ao gerar resposta: {e}", exc_info=True)
@@ -1123,6 +1687,26 @@ def get_handlers() -> list:
         allow_reentry=True,
     )
 
+    autonomia_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("horario", cmd_horario),
+            CommandHandler("fallback", cmd_fallback),
+            CommandHandler("faq", cmd_faq),
+            CallbackQueryHandler(painel_horario_callback, pattern="^painel_horario$"),
+            CallbackQueryHandler(painel_fallback_callback, pattern="^painel_fallback$"),
+            CallbackQueryHandler(painel_faq_callback, pattern="^painel_faq$"),
+            CallbackQueryHandler(faq_add_callback, pattern="^faq_add$"),
+        ],
+        states={
+            AGUARDANDO_HORARIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_horario)],
+            AGUARDANDO_FALLBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_fallback)],
+            AGUARDANDO_FAQ_PERGUNTA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_faq_pergunta)],
+            AGUARDANDO_FAQ_RESPOSTA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_faq_resposta)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar_registro)],
+        allow_reentry=True,
+    )
+
     # ConversationHandler para edição
     editar_handler = ConversationHandler(
         entry_points=[
@@ -1143,6 +1727,8 @@ def get_handlers() -> list:
         CommandHandler("painel", cmd_painel),
         CommandHandler("documentos", cmd_documentos),
         CommandHandler("status", cmd_status),
+        CommandHandler("pausar", cmd_pausar),
+        CommandHandler("ativar", cmd_ativar),
         CallbackQueryHandler(
             painel_refresh_callback,
             pattern="^painel_refresh$",
@@ -1158,6 +1744,10 @@ def get_handlers() -> list:
         CallbackQueryHandler(
             painel_ajuda_callback,
             pattern="^painel_ajuda$",
+        ),
+        CallbackQueryHandler(
+            painel_ativo_toggle_callback,
+            pattern="^painel_ativo_toggle$",
         ),
         CallbackQueryHandler(
             docs_painel_callback,
@@ -1179,9 +1769,26 @@ def get_handlers() -> list:
             docs_excluir_callback,
             pattern=r"^docs_excluir:\d+$",
         ),
+        CallbackQueryHandler(
+            faq_painel_callback,
+            pattern="^faq_painel$",
+        ),
+        CallbackQueryHandler(
+            faq_refresh_callback,
+            pattern="^faq_refresh$",
+        ),
+        CallbackQueryHandler(
+            faq_limpar_callback,
+            pattern="^faq_limpar$",
+        ),
+        CallbackQueryHandler(
+            faq_excluir_callback,
+            pattern=r"^faq_excluir:\d+$",
+        ),
         registro_handler,
         upload_handler,
         imagem_handler,
+        autonomia_handler,
         editar_handler,
         MessageHandler(filters.Document.ALL, receber_documento_direto),
         # Handler de interação com o agente — deve ser o último

@@ -23,6 +23,9 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             nome_bot="Ana",
             saudacao="Oi",
             instrucoes="Seja objetiva",
+            ativo=0,
+            horario_atendimento="Seg a Sex, 08h às 18h",
+            fallback_contato="WhatsApp (11) 99999-9999",
         )
 
         empresa = await database.obter_empresa_por_usuario(12345)
@@ -33,6 +36,9 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empresa["nome_bot"], "Ana")
         self.assertEqual(empresa["saudacao"], "Oi")
         self.assertEqual(empresa["instrucoes"], "Seja objetiva")
+        self.assertEqual(empresa["ativo"], 0)
+        self.assertEqual(empresa["horario_atendimento"], "Seg a Sex, 08h às 18h")
+        self.assertEqual(empresa["fallback_contato"], "WhatsApp (11) 99999-9999")
 
     async def test_documentos_nao_duplicam_por_nome_arquivo(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
@@ -50,6 +56,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         empresa_id = await database.criar_empresa("Acme", 12345)
         documento_id = await database.registrar_documento(empresa_id, "base.txt")
         await database.registrar_conversa(empresa_id, 999, "Oi", "Olá")
+        await database.criar_faq(empresa_id, "Qual o horário?", "Seg a Sex")
 
         excluido = await database.excluir_documento(empresa_id, documento_id)
         documento = await database.obter_documento_por_id(empresa_id, documento_id)
@@ -65,3 +72,25 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(empresa)
         self.assertEqual(documentos, [])
+
+    async def test_cria_lista_e_limpa_faqs(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+
+        faq_id = await database.criar_faq(empresa_id, "Qual o horário?", "Seg a Sex")
+        await database.criar_faq(empresa_id, "Tem WhatsApp?", "Sim")
+        faqs = await database.listar_faqs(empresa_id)
+
+        self.assertEqual(len(faqs), 2)
+        self.assertEqual(faqs[0]["id"], faq_id)
+        self.assertEqual(faqs[0]["pergunta"], "Qual o horário?")
+
+        removida = await database.excluir_faq(empresa_id, faq_id)
+        restantes = await database.listar_faqs(empresa_id)
+
+        self.assertTrue(removida)
+        self.assertEqual(len(restantes), 1)
+
+        removidas = await database.limpar_faqs(empresa_id)
+
+        self.assertEqual(removidas, 1)
+        self.assertEqual(await database.listar_faqs(empresa_id), [])
