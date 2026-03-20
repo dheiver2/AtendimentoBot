@@ -27,7 +27,7 @@ def obter_comandos_nativos() -> list[BotCommand]:
         BotCommand("start", "Iniciar ou abrir seu agente"),
         BotCommand("painel", "Abrir o painel principal"),
         BotCommand("upload", "Enviar novos documentos"),
-        BotCommand("imagem", "Trocar a foto do perfil do bot"),
+        BotCommand("imagem", "Atualizar a imagem do agente"),
         BotCommand("documentos", "Gerenciar a base de conhecimento"),
         BotCommand("editar", "Editar a configuração do agente"),
         BotCommand("status", "Ver o status atual"),

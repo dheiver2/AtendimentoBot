@@ -54,19 +54,24 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             original_pdfs_dir = handlers.PDFS_DIR
             original_vector_stores_dir = handlers.VECTOR_STORES_DIR
+            original_images_dir = handlers.IMAGES_DIR
             handlers.PDFS_DIR = os.path.join(temp_dir, "pdfs")
             handlers.VECTOR_STORES_DIR = os.path.join(temp_dir, "vector_stores")
+            handlers.IMAGES_DIR = os.path.join(temp_dir, "images")
 
             os.makedirs(os.path.join(handlers.PDFS_DIR, "7"), exist_ok=True)
             os.makedirs(os.path.join(handlers.VECTOR_STORES_DIR, "7"), exist_ok=True)
+            os.makedirs(os.path.join(handlers.IMAGES_DIR, "7"), exist_ok=True)
 
             try:
                 handlers._remover_arquivos_empresa(7)
                 self.assertFalse(os.path.exists(os.path.join(handlers.PDFS_DIR, "7")))
                 self.assertFalse(os.path.exists(os.path.join(handlers.VECTOR_STORES_DIR, "7")))
+                self.assertFalse(os.path.exists(os.path.join(handlers.IMAGES_DIR, "7")))
             finally:
                 handlers.PDFS_DIR = original_pdfs_dir
                 handlers.VECTOR_STORES_DIR = original_vector_stores_dir
+                handlers.IMAGES_DIR = original_images_dir
 
     async def test_reindexar_base_empresa_reconstroi_documentos_validos(self):
         with tempfile.TemporaryDirectory() as temp_dir:

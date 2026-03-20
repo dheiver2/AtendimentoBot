@@ -1,11 +1,10 @@
-import json
+import os
 from io import BytesIO
 from pathlib import Path
 
-import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-TELEGRAM_BOT_API_BASE = "https://api.telegram.org"
+from config import IMAGES_DIR
 
 SUPPORTED_IMAGE_EXTENSIONS = {
     ".jpg",
@@ -42,7 +41,7 @@ def imagem_suportada(nome_arquivo: str | None = None, mime_type: str | None = No
 
 
 def converter_para_jpg(conteudo_bytes: bytes) -> bytes:
-    """Converte uma imagem estática suportada para JPG, exigido pela Bot API."""
+    """Converte uma imagem suportada para JPG."""
     try:
         with Image.open(BytesIO(conteudo_bytes)) as imagem:
             imagem = ImageOps.exif_transpose(imagem)
@@ -67,43 +66,36 @@ def converter_para_jpg(conteudo_bytes: bytes) -> bytes:
         raise ValueError("Não foi possível reconhecer o arquivo como uma imagem válida.") from exc
 
 
-async def _post_bot_api(token: str, method: str, *, data: dict | None = None, files: dict | None = None):
-    """Executa uma chamada direta à Bot API do Telegram."""
-    url = f"{TELEGRAM_BOT_API_BASE}/bot{token}/{method}"
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(url, data=data, files=files)
-
-    try:
-        payload = response.json()
-    except ValueError:
-        response.raise_for_status()
-        raise ValueError("Resposta inválida da Bot API do Telegram.") from None
-
-    if response.status_code >= 400 or not payload.get("ok"):
-        descricao = payload.get("description") or f"HTTP {response.status_code}"
-        raise ValueError(descricao)
-
-    return payload.get("result")
+def obter_caminho_imagem_empresa(empresa_id: int) -> str:
+    """Retorna o caminho da imagem configurada pela empresa."""
+    return os.path.join(IMAGES_DIR, str(empresa_id), "perfil.jpg")
 
 
-async def definir_foto_perfil_bot(token: str, conteudo_bytes: bytes):
-    """Define a foto de perfil do bot usando a Bot API."""
+def empresa_tem_imagem(empresa_id: int) -> bool:
+    """Indica se a empresa já configurou uma imagem própria."""
+    return os.path.exists(obter_caminho_imagem_empresa(empresa_id))
+
+
+def salvar_imagem_empresa(empresa_id: int, conteudo_bytes: bytes) -> str:
+    """Salva a imagem da empresa em JPG no disco."""
     conteudo_jpg = converter_para_jpg(conteudo_bytes)
-    data = {
-        "photo": json.dumps(
-            {
-                "type": "static",
-                "photo": "attach://profile_photo",
-            }
-        )
-    }
-    files = {
-        "profile_photo": ("profile.jpg", conteudo_jpg, "image/jpeg"),
-    }
-    await _post_bot_api(token, "setMyProfilePhoto", data=data, files=files)
+    pasta_empresa = os.path.join(IMAGES_DIR, str(empresa_id))
+    os.makedirs(pasta_empresa, exist_ok=True)
+    caminho = obter_caminho_imagem_empresa(empresa_id)
+    with open(caminho, "wb") as arquivo:
+        arquivo.write(conteudo_jpg)
+    return caminho
 
 
-async def remover_foto_perfil_bot(token: str):
-    """Remove a foto de perfil atual do bot."""
-    await _post_bot_api(token, "removeMyProfilePhoto")
+def excluir_imagem_empresa(empresa_id: int) -> bool:
+    """Remove a imagem configurada pela empresa."""
+    caminho = obter_caminho_imagem_empresa(empresa_id)
+    if not os.path.exists(caminho):
+        return False
+
+    os.remove(caminho)
+    pasta_empresa = os.path.dirname(caminho)
+    if os.path.isdir(pasta_empresa) and not os.listdir(pasta_empresa):
+        os.rmdir(pasta_empresa)
+
+    return True

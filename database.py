@@ -9,20 +9,32 @@ async def _obter_colunas_empresas(db: aiosqlite.Connection) -> set[str]:
     return {row[1] for row in rows}
 
 
-async def _migrar_coluna_usuario(db: aiosqlite.Connection):
-    """Garante a coluna de vínculo por user_id e migra dados antigos."""
+async def _garantir_colunas_empresas(db: aiosqlite.Connection):
+    """Garante colunas novas na tabela empresas, inclusive em bancos antigos."""
     colunas = await _obter_colunas_empresas(db)
-    if not colunas or "telegram_user_id" in colunas:
+
+    if not colunas:
         return
 
-    await db.execute("ALTER TABLE empresas ADD COLUMN telegram_user_id INTEGER")
+    if "telegram_user_id" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN telegram_user_id INTEGER")
 
-    if "telegram_admin_id" in colunas:
-        await db.execute("""
-            UPDATE empresas
-            SET telegram_user_id = telegram_admin_id
-            WHERE telegram_user_id IS NULL
-        """)
+        if "telegram_admin_id" in colunas:
+            await db.execute("""
+                UPDATE empresas
+                SET telegram_user_id = telegram_admin_id
+                WHERE telegram_user_id IS NULL
+            """)
+
+    colunas = await _obter_colunas_empresas(db)
+    if "ativo" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN ativo INTEGER NOT NULL DEFAULT 1")
+
+    if "horario_atendimento" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN horario_atendimento TEXT DEFAULT ''")
+
+    if "fallback_contato" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN fallback_contato TEXT DEFAULT ''")
 
     await db.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_empresas_telegram_user_id
@@ -53,10 +65,13 @@ async def init_db():
                 nome_bot TEXT DEFAULT 'Assistente',
                 saudacao TEXT DEFAULT 'Olá! Como posso ajudar você hoje?',
                 instrucoes TEXT DEFAULT 'Você é um assistente de atendimento ao cliente. Responda de forma educada e profissional.',
+                ativo INTEGER NOT NULL DEFAULT 1,
+                horario_atendimento TEXT DEFAULT '',
+                fallback_contato TEXT DEFAULT '',
                 criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await _migrar_coluna_usuario(db)
+        await _garantir_colunas_empresas(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS documentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,6 +93,16 @@ async def init_db():
                 usuario_telegram_id INTEGER NOT NULL,
                 mensagem_usuario TEXT NOT NULL,
                 resposta_bot TEXT NOT NULL,
+                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS faqs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                empresa_id INTEGER NOT NULL,
+                pergunta TEXT NOT NULL,
+                resposta TEXT NOT NULL,
                 criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (empresa_id) REFERENCES empresas(id)
             )
@@ -112,7 +137,15 @@ async def obter_empresa_por_usuario(telegram_user_id: int) -> dict | None:
 
 async def atualizar_empresa(empresa_id: int, **kwargs):
     """Atualiza campos da empresa."""
-    campos_permitidos = {"nome", "nome_bot", "saudacao", "instrucoes"}
+    campos_permitidos = {
+        "nome",
+        "nome_bot",
+        "saudacao",
+        "instrucoes",
+        "ativo",
+        "horario_atendimento",
+        "fallback_contato",
+    }
     campos = {k: v for k, v in kwargs.items() if k in campos_permitidos}
     if not campos:
         return
@@ -200,10 +233,56 @@ async def registrar_conversa(empresa_id: int, usuario_telegram_id: int, mensagem
         await db.commit()
 
 
+async def criar_faq(empresa_id: int, pergunta: str, resposta: str) -> int:
+    """Cria uma FAQ da empresa e retorna o ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO faqs (empresa_id, pergunta, resposta) VALUES (?, ?, ?)",
+            (empresa_id, pergunta, resposta),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def listar_faqs(empresa_id: int) -> list[dict]:
+    """Lista as FAQs cadastradas por empresa."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM faqs WHERE empresa_id = ? ORDER BY id ASC",
+            (empresa_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def excluir_faq(empresa_id: int, faq_id: int) -> bool:
+    """Exclui uma FAQ da empresa."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM faqs WHERE empresa_id = ? AND id = ?",
+            (empresa_id, faq_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def limpar_faqs(empresa_id: int) -> int:
+    """Remove todas as FAQs da empresa e retorna a quantidade removida."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM faqs WHERE empresa_id = ?",
+            (empresa_id,),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
 async def excluir_empresa_com_dados(empresa_id: int):
     """Remove empresa, documentos e histórico associados."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM conversas WHERE empresa_id = ?", (empresa_id,))
+        await db.execute("DELETE FROM faqs WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM documentos WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM empresas WHERE id = ?", (empresa_id,))
         await db.commit()

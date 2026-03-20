@@ -7,10 +7,8 @@ Bot de atendimento no Telegram com onboarding por usuário, RAG com Gemini e upl
 - Cada usuário configura o próprio agente com `/start`
 - Indexa documentos em `.pdf`, `.docx`, `.pptx`, `.txt`, `.md` e `.csv`
 - Permite gerenciar a base com `/documentos`
-- Permite trocar a foto do bot com `/imagem`
+- Permite definir a imagem do próprio agente com `/imagem`
 - Permite testar o agente no próprio chat
-
-Observação: a foto do perfil do bot é global para esse bot do Telegram.
 
 ## Requisitos
 

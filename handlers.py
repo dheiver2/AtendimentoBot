@@ -25,12 +25,14 @@ from database import (
     registrar_conversa,
 )
 from bot_profile_photo import (
-    definir_foto_perfil_bot,
+    empresa_tem_imagem,
+    excluir_imagem_empresa,
+    obter_caminho_imagem_empresa,
     imagem_suportada,
     listar_formatos_imagem_suportados,
-    remover_foto_perfil_bot,
+    salvar_imagem_empresa,
 )
-from config import PDFS_DIR, VECTOR_STORES_DIR
+from config import IMAGES_DIR, PDFS_DIR, VECTOR_STORES_DIR
 from document_processor import (
     arquivo_suportado,
     listar_formatos_suportados,
@@ -72,10 +74,24 @@ def _limpar_estado_usuario(context: ContextTypes.DEFAULT_TYPE):
 
 def _remover_arquivos_empresa(empresa_id: int):
     """Apaga documentos e vector store da empresa resetada."""
-    for diretorio_base in [PDFS_DIR, VECTOR_STORES_DIR]:
+    for diretorio_base in [PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
         caminho = os.path.join(diretorio_base, str(empresa_id))
         if os.path.isdir(caminho):
             shutil.rmtree(caminho, ignore_errors=True)
+
+
+async def _enviar_preview_imagem_empresa(
+    mensagem,
+    empresa_id: int,
+    legenda: str,
+):
+    """Envia a imagem atual da empresa como preview, quando existir."""
+    caminho = obter_caminho_imagem_empresa(empresa_id)
+    if not os.path.exists(caminho):
+        return
+
+    with open(caminho, "rb") as arquivo:
+        await mensagem.reply_photo(photo=arquivo, caption=legenda)
 
 
 def _teclado_painel() -> InlineKeyboardMarkup:
@@ -246,7 +262,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/registrar — Iniciar o cadastro da empresa\n"
         "/painel — Painel de gerenciamento\n"
         "/upload — Entrar no modo de envio de documentos\n"
-        "/imagem — Trocar a foto do perfil do bot\n"
+        "/imagem — Atualizar a imagem do agente\n"
         "/documentos — Gerenciar a base de conhecimento\n"
         "/editar — Editar configurações do bot\n"
         "/reset — Apagar a configuração atual e começar de novo\n"
@@ -256,7 +272,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Para /imagem, envie foto do Telegram ou imagem em: {formatos_imagem}.\n"
         "Use /documentos para reprocessar, excluir arquivos e reconstruir a base.\n"
         "Use o botão Menu do Telegram ou /painel para navegar mais rápido.\n"
-        "A foto do perfil do bot é global e a alteração será vista por todos os usuários.\n"
+        "A imagem enviada em /imagem fica vinculada só ao seu agente.\n"
         "Depois de configurar e enviar documentos, envie uma mensagem de texto para testar seu agente."
     )
     await mensagem.reply_text(texto)
@@ -380,7 +396,8 @@ async def _finalizar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🤖 Assistente: {dados['nome_bot']}\n"
         f"👋 Saudação: {dados['saudacao']}\n\n"
         f"Agora envie seus documentos neste chat ou use /upload para iniciar o envio guiado.\n"
-        f"Formatos aceitos: {formatos}.",
+        f"Formatos aceitos: {formatos}.\n"
+        "Se quiser, use /imagem para definir a imagem do seu agente.",
     )
 
     # Limpa dados temporários
@@ -524,11 +541,11 @@ async def finalizar_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════
-#  IMAGEM DO BOT
+#  IMAGEM DO AGENTE
 # ═══════════════════════════════════════════════════
 
 async def cmd_imagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inicia o fluxo para trocar a foto do perfil do bot."""
+    """Inicia o fluxo para atualizar a imagem própria do agente."""
     mensagem = update.effective_message
     user_id = update.effective_user.id
     empresa = await obter_empresa_por_usuario(user_id)
@@ -538,27 +555,29 @@ async def cmd_imagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.args and context.args[0].lower() in {"remover", "apagar"}:
         try:
-            await remover_foto_perfil_bot(context.bot.token)
-            await mensagem.reply_text(
-                "✅ A foto do perfil do bot foi removida.\n"
-                "Essa alteração é global e vale para todos os usuários."
-            )
+            removida = excluir_imagem_empresa(empresa["id"])
+            if removida:
+                await mensagem.reply_text("✅ A imagem do seu agente foi removida.")
+            else:
+                await mensagem.reply_text("ℹ️ Seu agente não tinha uma imagem configurada.")
+            return ConversationHandler.END
         except Exception as e:
-            logger.error(f"Erro ao remover foto do bot: {e}", exc_info=True)
+            logger.error(f"Erro ao remover imagem do agente: {e}", exc_info=True)
             await mensagem.reply_text(
-                "❌ Não foi possível remover a foto do perfil do bot agora. Tente novamente em instantes."
+                "❌ Não foi possível remover a imagem do seu agente agora. Tente novamente em instantes."
             )
         return ConversationHandler.END
 
     formatos_imagem = listar_formatos_imagem_suportados()
+    status_imagem = "já configurada" if empresa_tem_imagem(empresa["id"]) else "ainda não configurada"
     await mensagem.reply_text(
-        "🖼️ Troca da foto do perfil do bot\n\n"
+        "🖼️ Imagem do agente\n\n"
         "Envie uma foto do Telegram ou um arquivo de imagem agora.\n"
         f"Formatos aceitos: {formatos_imagem}.\n"
-        "A imagem será convertida para JPG se necessário.\n"
-        "Se quiser remover a foto atual, envie /imagem remover.\n"
-        "Se quiser sair, envie /cancelar.\n\n"
-        "⚠️ A foto do perfil do bot no Telegram é global e a alteração será vista por todos os usuários."
+        "A imagem será convertida para JPG se necessário e ficará vinculada apenas ao seu agente.\n"
+        f"Status atual: {status_imagem}.\n"
+        "Se quiser remover a imagem atual, envie /imagem remover.\n"
+        "Se quiser sair, envie /cancelar."
     )
     return AGUARDANDO_IMAGEM_BOT
 
@@ -585,29 +604,38 @@ async def _baixar_imagem_enviada(update: Update) -> tuple[bytes, str]:
 
 
 async def receber_imagem_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Recebe a nova foto do bot e aplica a alteração na Bot API."""
+    """Recebe a imagem do agente e salva a configuração do usuário."""
+    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    if not empresa:
+        await update.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
+        return ConversationHandler.END
+
     try:
         conteudo_bytes, _ = await _baixar_imagem_enviada(update)
     except ValueError as e:
         await update.message.reply_text(f"⚠️ {e}")
         return AGUARDANDO_IMAGEM_BOT
 
-    await update.message.reply_text("⏳ Atualizando a foto do perfil do bot...")
+    await update.message.reply_text("⏳ Atualizando a imagem do seu agente...")
 
     try:
-        await definir_foto_perfil_bot(context.bot.token, conteudo_bytes)
+        salvar_imagem_empresa(empresa["id"], conteudo_bytes)
         await update.message.reply_text(
-            "✅ A foto do perfil do bot foi atualizada com sucesso.\n"
-            "Essa alteração é global e será vista por todos os usuários."
+            "✅ A imagem do seu agente foi atualizada com sucesso."
+        )
+        await _enviar_preview_imagem_empresa(
+            update.message,
+            empresa["id"],
+            "Preview da imagem atual do seu agente.",
         )
         return ConversationHandler.END
     except ValueError as e:
         await update.message.reply_text(f"⚠️ {e}")
         return AGUARDANDO_IMAGEM_BOT
     except Exception as e:
-        logger.error(f"Erro ao atualizar foto do bot: {e}", exc_info=True)
+        logger.error(f"Erro ao atualizar imagem do agente: {e}", exc_info=True)
         await update.message.reply_text(
-            "❌ Não foi possível atualizar a foto do perfil do bot agora. Tente novamente."
+            "❌ Não foi possível atualizar a imagem do seu agente agora. Tente novamente."
         )
         return AGUARDANDO_IMAGEM_BOT
 
@@ -675,19 +703,21 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     docs = await listar_documentos(empresa["id"])
     tem_docs = empresa_tem_documentos(empresa["id"])
+    tem_imagem = empresa_tem_imagem(empresa["id"])
 
     status_emoji = "🟢" if tem_docs else "🔴"
     status_texto = "Pronto para teste" if tem_docs else "Sem documentos — envie arquivos no chat ou use /upload"
+    imagem_texto = "Configurada" if tem_imagem else "Não configurada"
 
     texto = (
         f"📊 Painel — {empresa['nome']}\n\n"
         f"🤖 Assistente: {empresa['nome_bot']}\n"
         f"👋 Saudação: {empresa['saudacao']}\n"
+        f"🖼️ Imagem: {imagem_texto}\n"
         f"📄 Documentos: {len(docs)}\n"
         f"{status_emoji} Status: {status_texto}\n\n"
         f"Use os botões abaixo ou o Menu do Telegram para navegar.\n\n"
-        f"Você pode enviar documentos diretamente neste chat e testar o agente com perguntas.\n"
-        f"A foto do perfil do bot no Telegram é global e será vista por todos os usuários."
+        f"Você pode enviar documentos diretamente neste chat e testar o agente com perguntas."
     )
     if update.callback_query:
         try:
@@ -875,12 +905,15 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tem_docs = empresa_tem_documentos(empresa["id"])
     docs = await listar_documentos(empresa["id"])
+    tem_imagem = empresa_tem_imagem(empresa["id"])
+    imagem_texto = "Configurada" if tem_imagem else "Não configurada"
 
     if tem_docs:
         texto = (
             f"🟢 Agente CONFIGURADO\n\n"
             f"Empresa: {empresa['nome']}\n"
             f"Assistente: {empresa['nome_bot']}\n"
+            f"Imagem: {imagem_texto}\n"
             f"Documentos indexados: {len(docs)}\n\n"
             f"Seu agente já pode ser testado neste chat."
         )
@@ -888,10 +921,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto = (
             f"🟡 Agente INCOMPLETO\n\n"
             f"Empresa: {empresa['nome']}\n"
+            f"Imagem: {imagem_texto}\n"
             f"Nenhum documento carregado.\n\n"
             f"Envie documentos neste chat ou use /upload para concluir a configuração."
         )
     await mensagem.reply_text(texto)
+    if tem_imagem:
+        await _enviar_preview_imagem_empresa(
+            mensagem,
+            empresa["id"],
+            "Imagem atual do seu agente.",
+        )
 
 
 # ═══════════════════════════════════════════════════
@@ -1068,7 +1108,7 @@ def get_handlers() -> list:
         allow_reentry=True,
     )
 
-    # ConversationHandler para troca da foto do perfil do bot
+    # ConversationHandler para a imagem própria do agente
     imagem_handler = ConversationHandler(
         entry_points=[
             CommandHandler("imagem", cmd_imagem),

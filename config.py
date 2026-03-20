@@ -23,8 +23,9 @@ BUNDLED_ENV_PATH = os.path.join(BUNDLE_DIR, ".env")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PDFS_DIR = os.path.join(DATA_DIR, "pdfs")
 VECTOR_STORES_DIR = os.path.join(DATA_DIR, "vector_stores")
+IMAGES_DIR = os.path.join(DATA_DIR, "images")
 DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
 # Garante que os diretórios existem
-for d in [DATA_DIR, PDFS_DIR, VECTOR_STORES_DIR]:
+for d in [DATA_DIR, PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
     os.makedirs(d, exist_ok=True)
