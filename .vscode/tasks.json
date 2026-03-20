@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Instalar dependências",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m pip install --upgrade pip && ${workspaceFolder}/.venv/bin/python -m pip install -r requirements.txt",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Executar bot",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python main.py",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Gerar binário Linux",
+      "type": "shell",
+      "command": "bash ${workspaceFolder}/build_bin.sh",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

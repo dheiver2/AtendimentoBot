@@ -21,15 +21,16 @@ Observação: a foto do perfil do bot é global para esse bot do Telegram.
 ## Instalação
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 
-# Linux / Mac
+# Ubuntu 24.04 / Linux
 source .venv/bin/activate
 
 # Windows
 .venv\Scripts\activate
 
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
 Crie o `.env` a partir do `.env.example`:
@@ -59,6 +60,15 @@ GOOGLE_EMBEDDING_MODEL=models/gemini-embedding-001
 python main.py
 ```
 
+## VS Code
+
+No Ubuntu 24.04, o projeto já vem pronto para abrir no VS Code:
+
+- selecione a pasta do projeto no VS Code
+- use a interpreter `.venv/bin/python`
+- rode `F5` com a configuração `AtendimentoBot`
+- ou execute as tasks `Instalar dependências`, `Executar bot` e `Gerar binário Linux`
+
 ## Executável
 
 ```powershell
@@ -68,6 +78,14 @@ python main.py
 O binário final fica em `dist\AtendimentoBot.exe`.
 
 Se existir um `.env` na raiz do projeto durante o build, ele será embutido no `.exe`. Nesse caso, basta dar dois cliques em `AtendimentoBot.exe` para subir o bot.
+
+No Ubuntu 24.04, para gerar o binário Linux:
+
+```bash
+bash build_bin.sh
+```
+
+O binário final fica em `dist/AtendimentoBot`.
 
 ## Uso
 
