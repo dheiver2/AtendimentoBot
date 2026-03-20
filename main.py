@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 from telegram import BotCommand, BotCommandScopeAllPrivateChats, MenuButtonCommands
 from telegram.ext import ApplicationBuilder
 
+from config import ENV_PATH
 from database import init_db
 from handlers import get_handlers
 
-load_dotenv()
+load_dotenv(ENV_PATH)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

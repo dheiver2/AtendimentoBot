@@ -59,6 +59,14 @@ GOOGLE_EMBEDDING_MODEL=models/gemini-embedding-001
 python main.py
 ```
 
+## Executável
+
+```powershell
+.\build_exe.bat
+```
+
+O binário final fica em `dist\AtendimentoBot.exe`. Deixe o `.env` na mesma pasta do executável.
+
 ## Uso
 
 1. Abra o bot no Telegram e envie `/start`

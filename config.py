@@ -1,7 +1,18 @@
 import os
+import sys
+
+
+def _obter_base_dir() -> str:
+    """Resolve o diretório-base do app em source e em executável onefile."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+
+    return os.path.dirname(os.path.abspath(__file__))
+
 
 # Diretórios do projeto
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = _obter_base_dir()
+ENV_PATH = os.path.join(BASE_DIR, ".env")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PDFS_DIR = os.path.join(DATA_DIR, "pdfs")
 VECTOR_STORES_DIR = os.path.join(DATA_DIR, "vector_stores")
