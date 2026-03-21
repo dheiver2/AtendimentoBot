@@ -46,6 +46,24 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("▶️ Ativar", textos)
 
+    def test_monta_link_atendimento(self):
+        link = handlers._montar_link_atendimento("@meu_bot_teste", "abc123")
+
+        self.assertEqual(link, "https://t.me/meu_bot_teste?start=abc123")
+
+    def test_resposta_sem_base_muda_para_cliente(self):
+        empresa = {
+            "horario_atendimento": "Seg a Sex",
+            "fallback_contato": "WhatsApp",
+        }
+
+        resposta_admin = handlers._formatar_resposta_sem_base(empresa, usuario_admin=True)
+        resposta_cliente = handlers._formatar_resposta_sem_base(empresa, usuario_admin=False)
+
+        self.assertIn("/upload", resposta_admin)
+        self.assertNotIn("/upload", resposta_cliente)
+        self.assertIn("sendo preparado", resposta_cliente)
+
     def test_teclado_faqs_renderiza_acoes_por_item(self):
         teclado = handlers._teclado_faqs(
             [

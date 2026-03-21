@@ -16,9 +16,13 @@ from telegram.ext import (
 )
 
 from database import (
+    contar_clientes_empresa,
     criar_empresa,
     criar_faq,
-    obter_empresa_por_usuario,
+    obter_empresa_do_cliente,
+    obter_empresa_do_usuario,
+    obter_empresa_por_admin,
+    obter_empresa_por_link_token,
     atualizar_empresa,
     excluir_empresa_com_dados,
     excluir_documento,
@@ -29,6 +33,7 @@ from database import (
     listar_documentos,
     listar_faqs,
     registrar_conversa,
+    vincular_cliente_empresa,
 )
 from bot_profile_photo import (
     empresa_tem_imagem,
@@ -47,6 +52,7 @@ from document_processor import (
 )
 from vector_store import adicionar_documentos, empresa_tem_documentos, substituir_documentos
 from rag_chain import gerar_resposta
+from telegram_commands import sincronizar_comandos_chat
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +90,86 @@ def _limpar_estado_usuario(context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop(key, None)
 
 
+def _obter_payload_start(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Extrai o payload do /start quando o usuário veio por deep link."""
+    if not context.args:
+        return None
+    payload = context.args[0].strip()
+    return payload or None
+
+
 def _remover_arquivos_empresa(empresa_id: int):
     """Apaga documentos e vector store da empresa resetada."""
     for diretorio_base in [PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
         caminho = os.path.join(diretorio_base, str(empresa_id))
         if os.path.isdir(caminho):
             shutil.rmtree(caminho, ignore_errors=True)
+
+
+def _mensagem_somente_admin() -> str:
+    """Texto padrão para comandos de gestão restritos ao admin."""
+    return (
+        "🔒 Este comando é exclusivo do admin que configurou o bot.\n"
+        "Se você recebeu um link de atendimento, use este chat apenas para conversar."
+    )
+
+
+async def _sincronizar_comandos_do_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    perfil: str,
+):
+    """Atualiza o menu de comandos do chat conforme o perfil atual."""
+    chat = update.effective_chat
+    if not chat:
+        return
+    try:
+        await sincronizar_comandos_chat(context.bot, chat.id, perfil)
+    except Exception as e:
+        logger.warning(
+            "Falha ao sincronizar comandos do chat %s para o perfil %s: %s",
+            chat.id,
+            perfil,
+            e,
+        )
+
+
+def _montar_link_atendimento(bot_username: str, link_token: str) -> str:
+    """Monta o deep link do Telegram para clientes do admin."""
+    username = (bot_username or "").strip().lstrip("@")
+    if not username:
+        raise ValueError("O bot precisa ter um username público no Telegram para gerar links.")
+    return f"https://t.me/{username}?start={link_token}"
+
+
+async def _obter_empresa_admin_ou_responder(
+    update: Update,
+    mensagem_nao_configurado: str | None = None,
+) -> dict | None:
+    """Retorna a empresa do admin ou responde com a mensagem adequada."""
+    empresa = await obter_empresa_por_admin(update.effective_user.id)
+    if empresa:
+        return empresa
+
+    empresa_cliente = await obter_empresa_do_cliente(update.effective_user.id)
+    if empresa_cliente:
+        await update.effective_message.reply_text(_mensagem_somente_admin())
+        return None
+
+    await update.effective_message.reply_text(
+        mensagem_nao_configurado or "❌ Seu agente ainda não foi configurado. Use /start primeiro."
+    )
+    return None
+
+
+async def _enviar_boas_vindas_cliente(mensagem, empresa: dict):
+    """Envia a mensagem inicial para um cliente vinculado via link."""
+    texto = (
+        f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
+        f"{empresa['saudacao']}\n\n"
+        "Envie sua mensagem normalmente para conversar."
+    )
+    await mensagem.reply_text(texto)
 
 
 async def _enviar_preview_imagem_empresa(
@@ -279,12 +359,13 @@ def _formatar_resposta_pausado(empresa: dict) -> str:
     return "\n".join(linhas)
 
 
-def _formatar_resposta_sem_base(empresa: dict) -> str:
+def _formatar_resposta_sem_base(empresa: dict, usuario_admin: bool) -> str:
     """Monta a resposta padrão quando ainda não há base carregada."""
-    linhas = [
-        "📄 Seu agente ainda não tem base de conhecimento.",
-        "Envie documentos neste chat ou use /upload para concluir a configuração.",
-    ]
+    linhas = ["📄 Este atendimento ainda não tem base de conhecimento carregada."]
+    if usuario_admin:
+        linhas.append("Envie documentos neste chat ou use /upload para concluir a configuração.")
+    else:
+        linhas.append("O atendimento ainda está sendo preparado. Tente novamente em instantes.")
     if empresa.get("horario_atendimento"):
         linhas.append(f"🕒 Horário informado: {empresa['horario_atendimento']}")
     if empresa.get("fallback_contato"):
@@ -385,62 +466,134 @@ async def _iniciar_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /start — abre a configuração do usuário ou inicia o onboarding."""
+    """Comando /start — resolve admin, cliente por link ou inicia onboarding."""
+    mensagem = update.effective_message
     user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    payload = _obter_payload_start(context)
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
     formatos = listar_formatos_suportados()
 
-    if empresa:
-        tem_docs = empresa_tem_documentos(empresa["id"])
+    if payload:
+        empresa_link = await obter_empresa_por_link_token(payload)
+        if not empresa_link:
+            await _sincronizar_comandos_do_chat(update, context, "padrao")
+            await mensagem.reply_text(
+                "❌ Este link de atendimento é inválido ou expirou.\n"
+                "Peça um novo link ao atendimento."
+            )
+            return ConversationHandler.END
+
+        if empresa_admin:
+            await _sincronizar_comandos_do_chat(update, context, "admin")
+            if empresa_admin["id"] == empresa_link["id"]:
+                await mensagem.reply_text(
+                    f"Você já é o admin de {empresa_admin['nome']}.\n"
+                    "Use /painel para gerenciar o agente e /link para compartilhar com seus clientes."
+                )
+            else:
+                await mensagem.reply_text(
+                    "🔒 Este link é destinado a clientes.\n"
+                    "Seu usuário já está cadastrado como admin de outro atendimento."
+                )
+            return ConversationHandler.END
+
+        await vincular_cliente_empresa(empresa_link["id"], user_id)
+        await _sincronizar_comandos_do_chat(update, context, "cliente")
+        await _enviar_boas_vindas_cliente(mensagem, empresa_link)
+        return ConversationHandler.END
+
+    if empresa_admin:
+        await _sincronizar_comandos_do_chat(update, context, "admin")
+        tem_docs = empresa_tem_documentos(empresa_admin["id"])
         dica_teste = (
             "Envie uma pergunta neste chat para testar o agente."
             if tem_docs
             else f"Envie documentos com /upload para o agente começar a funcionar. Formatos aceitos: {formatos}."
         )
-        await update.message.reply_text(
-            f"👋 Sua configuração para {empresa['nome']} já está ativa.\n\n"
+        await mensagem.reply_text(
+            f"👋 Sua configuração para {empresa_admin['nome']} já está ativa.\n\n"
             f"Use /painel para gerenciar o agente.\n"
+            f"Use /link para gerar o link dos clientes.\n"
             f"Use o Menu do Telegram ou /ajuda para ver os comandos.\n"
             f"{dica_teste}",
         )
         return ConversationHandler.END
 
+    if empresa_cliente:
+        await _sincronizar_comandos_do_chat(update, context, "cliente")
+        await _enviar_boas_vindas_cliente(mensagem, empresa_cliente)
+        return ConversationHandler.END
+
+    await _sincronizar_comandos_do_chat(update, context, "padrao")
     return await _iniciar_onboarding(update, context)
 
 
 async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /ajuda."""
     mensagem = update.effective_message
+    user_id = update.effective_user.id
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
     formatos = listar_formatos_suportados()
     formatos_imagem = listar_formatos_imagem_suportados()
-    texto = (
-        "📋 Comandos disponíveis:\n\n"
-        "Cada usuário do Telegram configura seu próprio agente neste bot.\n\n"
-        "/start — Iniciar a configuração inicial\n"
-        "/registrar — Iniciar o cadastro da empresa\n"
-        "/painel — Painel de gerenciamento\n"
-        "/upload — Entrar no modo de envio de documentos\n"
-        "/imagem — Atualizar a imagem do agente\n"
-        "/pausar — Pausar o agente\n"
-        "/ativar — Reativar o agente\n"
-        "/horario — Configurar horário de atendimento\n"
-        "/fallback — Configurar contato humano de fallback\n"
-        "/faq — Gerenciar perguntas frequentes\n"
-        "/documentos — Gerenciar a base de conhecimento\n"
-        "/editar — Editar configurações do bot\n"
-        "/reset — Apagar a configuração atual e começar de novo\n"
-        "/status — Ver status do bot\n\n"
-        f"Você pode enviar documentos diretamente neste chat a qualquer momento.\n"
-        f"Formatos aceitos: {formatos}.\n"
-        f"Para /imagem, envie foto do Telegram ou imagem em: {formatos_imagem}.\n"
-        "Use /horario e /fallback para definir regras operacionais do seu agente.\n"
-        "Use /faq para cadastrar respostas rápidas antes mesmo de subir documentos.\n"
-        "Use /documentos para reprocessar, excluir arquivos e reconstruir a base.\n"
-        "Use o botão Menu do Telegram ou /painel para navegar mais rápido.\n"
-        "A imagem enviada em /imagem fica vinculada só ao seu agente.\n"
-        "Depois de configurar e enviar documentos, envie uma mensagem de texto para testar seu agente."
-    )
+    if empresa_admin:
+        texto = (
+            "📋 Comandos do admin:\n\n"
+            "/start — Abrir a configuração inicial\n"
+            "/link — Gerar o link de atendimento para os clientes\n"
+            "/painel — Painel de gerenciamento\n"
+            "/upload — Entrar no modo de envio de documentos\n"
+            "/imagem — Atualizar a imagem do agente\n"
+            "/pausar — Pausar o agente\n"
+            "/ativar — Reativar o agente\n"
+            "/horario — Configurar horário de atendimento\n"
+            "/fallback — Configurar contato humano de fallback\n"
+            "/faq — Gerenciar perguntas frequentes\n"
+            "/documentos — Gerenciar a base de conhecimento\n"
+            "/editar — Editar configurações do bot\n"
+            "/reset — Apagar a configuração atual e começar de novo\n"
+            "/status — Ver status do bot\n\n"
+            f"Você pode enviar documentos diretamente neste chat a qualquer momento.\n"
+            f"Formatos aceitos: {formatos}.\n"
+            f"Para /imagem, envie foto do Telegram ou imagem em: {formatos_imagem}.\n"
+            "Depois de configurar e enviar documentos, use /link para compartilhar o atendimento com seus clientes.\n"
+            "Clientes entram pelo link e usam este bot só para conversar."
+        )
+    elif empresa_cliente:
+        texto = (
+            f"💬 Este chat está vinculado ao atendimento de {empresa_cliente['nome']}.\n\n"
+            "Aqui você não precisa usar comandos de gestão.\n"
+            "Basta enviar sua mensagem normalmente para conversar com o bot.\n\n"
+            "Se precisar de um novo acesso, peça o link novamente ao atendimento."
+        )
+    else:
+        texto = (
+            "👋 Este bot possui dois perfis:\n\n"
+            "- admin: configura a empresa, documentos, FAQ e horário\n"
+            "- cliente: usa apenas o link enviado pelo admin para conversar\n\n"
+            "Se você é o admin, envie /start para iniciar a configuração."
+        )
     await mensagem.reply_text(texto)
+
+
+async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gera o deep link que o admin envia para seus clientes."""
+    empresa = await _obter_empresa_admin_ou_responder(update)
+    if not empresa:
+        return
+
+    bot_info = await context.bot.get_me()
+    try:
+        link = _montar_link_atendimento(bot_info.username or "", empresa["link_token"])
+    except ValueError as exc:
+        await update.effective_message.reply_text(f"❌ {exc}")
+        return
+
+    await update.effective_message.reply_text(
+        f"🔗 Link de atendimento de {empresa['nome']}:\n{link}\n\n"
+        "Envie esse link para seus clientes. Quando eles abrirem, poderão apenas conversar com o bot."
+    )
 
 
 # ═══════════════════════════════════════════════════
@@ -450,12 +603,17 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia o fluxo de registro de empresa."""
     user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
-    if empresa:
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
+    if empresa_admin:
         await update.message.reply_text(
-            f"Você já tem a empresa {empresa['nome']} registrada.\n"
+            f"Você já tem a empresa {empresa_admin['nome']} registrada.\n"
             f"Use /painel para gerenciar, /editar para ajustar a configuração ou /reset para recomeçar do zero.",
         )
+        return ConversationHandler.END
+
+    if empresa_cliente:
+        await update.message.reply_text(_mensagem_somente_admin())
         return ConversationHandler.END
 
     return await _iniciar_onboarding(update, context)
@@ -464,32 +622,28 @@ async def cmd_registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Apaga a configuração atual do usuário e reinicia o onboarding."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
+    if not empresa:
+        return ConversationHandler.END
 
     _limpar_estado_usuario(context)
 
-    if empresa:
-        try:
-            await excluir_empresa_com_dados(empresa["id"])
-            _remover_arquivos_empresa(empresa["id"])
-        except Exception as e:
-            logger.error(f"Erro ao resetar configuração: {e}", exc_info=True)
-            await mensagem.reply_text(
-                "❌ Não foi possível resetar sua configuração agora. Tente novamente em instantes."
-            )
-            return ConversationHandler.END
-
+    try:
+        await excluir_empresa_com_dados(empresa["id"])
+        _remover_arquivos_empresa(empresa["id"])
+    except Exception as e:
+        logger.error(f"Erro ao resetar configuração: {e}", exc_info=True)
         await mensagem.reply_text(
-            f"♻️ A configuração atual de {empresa['nome']} foi apagada.\n"
-            "Vamos configurar seu agente novamente."
+            "❌ Não foi possível resetar sua configuração agora. Tente novamente em instantes."
         )
-    else:
-        await mensagem.reply_text(
-            "♻️ Nenhuma configuração ativa foi encontrada.\n"
-            "Vamos iniciar o onboarding do zero."
-        )
+        return ConversationHandler.END
 
+    await mensagem.reply_text(
+        f"♻️ A configuração atual de {empresa['nome']} foi apagada.\n"
+        "Vamos configurar seu agente novamente."
+    )
+
+    await _sincronizar_comandos_do_chat(update, context, "padrao")
     return await _iniciar_onboarding(update, context)
 
 
@@ -554,6 +708,7 @@ async def _finalizar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE
         saudacao=dados["saudacao"],
         instrucoes=dados["instrucoes"],
     )
+    await _sincronizar_comandos_do_chat(update, context, "admin")
 
     await update.message.reply_text(
         f"🎉 Empresa cadastrada com sucesso!\n\n"
@@ -561,6 +716,7 @@ async def _finalizar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🤖 Assistente: {dados['nome_bot']}\n"
         f"👋 Saudação: {dados['saudacao']}\n\n"
         f"Agora envie seus documentos neste chat ou use /upload para iniciar o envio guiado.\n"
+        "Use /link quando quiser gerar o link dos seus clientes.\n"
         f"Formatos aceitos: {formatos}.\n"
         "Se quiser, use /imagem para definir a imagem do seu agente.",
     )
@@ -586,10 +742,8 @@ async def cancelar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia o fluxo de upload de documentos."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     context.user_data["empresa_upload_id"] = empresa["id"]
@@ -680,13 +834,8 @@ async def receber_documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receber_documento_direto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa documentos enviados diretamente no chat, sem exigir /upload."""
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.message.reply_text(
-            "👋 Seu agente ainda não foi configurado.\n"
-            "Envie /start para iniciar a configuração antes de mandar documentos."
-        )
         return
 
     await _processar_documento_enviado(update, empresa["id"], modo_upload=False)
@@ -712,10 +861,8 @@ async def finalizar_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_imagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia o fluxo para atualizar a imagem própria do agente."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     if context.args and context.args[0].lower() in {"remover", "apagar"}:
@@ -770,9 +917,8 @@ async def _baixar_imagem_enviada(update: Update) -> tuple[bytes, str]:
 
 async def receber_imagem_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Recebe a imagem do agente e salva a configuração do usuário."""
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     try:
@@ -808,10 +954,8 @@ async def receber_imagem_bot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def _definir_status_agente(update: Update, context: ContextTypes.DEFAULT_TYPE, ativo: bool):
     """Ativa ou pausa o agente do usuário."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     ativo_atual = bool(empresa.get("ativo", 1))
@@ -849,10 +993,8 @@ async def cmd_ativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia ou aplica a configuração de horário de atendimento."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     if context.args:
@@ -880,9 +1022,8 @@ async def cmd_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receber_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Recebe o novo horário de atendimento do agente."""
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     horario = update.message.text.strip()
@@ -894,10 +1035,8 @@ async def receber_horario(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia ou aplica a configuração do fallback para atendimento humano."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     if context.args:
@@ -925,9 +1064,8 @@ async def cmd_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receber_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Recebe o novo contato de fallback do agente."""
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     fallback = update.message.text.strip()
@@ -975,9 +1113,8 @@ async def _mostrar_faqs(update: Update, empresa: dict):
 async def _iniciar_cadastro_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Inicia a conversa de cadastro de uma nova FAQ."""
     mensagem = update.effective_message
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     context.user_data["empresa_faq_id"] = empresa["id"]
@@ -993,9 +1130,8 @@ async def _iniciar_cadastro_faq(update: Update, context: ContextTypes.DEFAULT_TY
 async def cmd_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gerencia as FAQs da empresa."""
     mensagem = update.effective_message
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     if context.args:
@@ -1051,7 +1187,7 @@ async def receber_faq_resposta(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.pop("faq_pergunta", None)
 
     await update.message.reply_text("✅ FAQ cadastrada com sucesso.")
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await obter_empresa_por_admin(update.effective_user.id)
     if empresa:
         await _mostrar_faqs(update, empresa)
     return ConversationHandler.END
@@ -1120,9 +1256,8 @@ async def painel_fallback_callback(update: Update, context: ContextTypes.DEFAULT
 async def painel_ativo_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Alterna o estado ativo/pausado do agente pelo painel."""
     await update.callback_query.answer()
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.effective_message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
     await _definir_status_agente(update, context, ativo=not bool(empresa.get("ativo", 1)))
 
@@ -1146,14 +1281,13 @@ async def painel_editar_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra o painel de gerenciamento."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     docs = await listar_documentos(empresa["id"])
     faqs = await listar_faqs(empresa["id"])
+    total_clientes = await contar_clientes_empresa(empresa["id"])
     tem_docs = empresa_tem_documentos(empresa["id"])
     tem_imagem = empresa_tem_imagem(empresa["id"])
     agente_ativo = bool(empresa.get("ativo", 1))
@@ -1181,11 +1315,12 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🖼️ Imagem: {imagem_texto}\n"
         f"🕒 Horário: {horario_texto}\n"
         f"🆘 Fallback: {fallback_texto}\n"
+        f"👥 Clientes: {total_clientes}\n"
         f"❔ FAQs: {len(faqs)}\n"
         f"📄 Documentos: {len(docs)}\n"
         f"{status_emoji} Status: {status_texto}\n\n"
         f"Use os botões abaixo ou o Menu do Telegram para navegar.\n\n"
-        f"Você pode enviar documentos diretamente neste chat e testar o agente com perguntas."
+        f"Você pode enviar documentos diretamente neste chat, testar o agente com perguntas e usar /link para compartilhar com clientes."
     )
     if update.callback_query:
         try:
@@ -1200,10 +1335,8 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_documentos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra a gestão da base de conhecimento da empresa."""
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.effective_message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     docs = await listar_documentos(empresa["id"])
@@ -1270,9 +1403,8 @@ async def docs_reindexar_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
 
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     try:
@@ -1292,9 +1424,8 @@ async def docs_reprocessar_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     documento_id = int(query.data.split(":", 1)[1])
@@ -1327,9 +1458,8 @@ async def docs_excluir_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
 
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     documento_id = int(query.data.split(":", 1)[1])
@@ -1371,9 +1501,8 @@ async def faq_painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def faq_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Atualiza a visão de FAQ da empresa."""
     await update.callback_query.answer()
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await update.effective_message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
     await _mostrar_faqs(update, empresa)
 
@@ -1383,9 +1512,8 @@ async def faq_excluir_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     faq_id = int(query.data.split(":", 1)[1])
@@ -1402,9 +1530,8 @@ async def faq_limpar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    empresa = await obter_empresa_por_usuario(update.effective_user.id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await query.message.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     removidas = await limpar_faqs(empresa["id"])
@@ -1415,15 +1542,14 @@ async def faq_limpar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra o status atual do bot."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return
 
     tem_docs = empresa_tem_documentos(empresa["id"])
     docs = await listar_documentos(empresa["id"])
     faqs = await listar_faqs(empresa["id"])
+    total_clientes = await contar_clientes_empresa(empresa["id"])
     tem_imagem = empresa_tem_imagem(empresa["id"])
     imagem_texto = "Configurada" if tem_imagem else "Não configurada"
     atendimento_texto = "Ativo" if bool(empresa.get("ativo", 1)) else "Pausado"
@@ -1439,9 +1565,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Imagem: {imagem_texto}\n"
             f"Horário: {horario_texto}\n"
             f"Fallback: {fallback_texto}\n"
+            f"Clientes vinculados: {total_clientes}\n"
             f"FAQs: {len(faqs)}\n"
             f"Documentos indexados: {len(docs)}\n\n"
-            f"Seu agente já pode ser testado neste chat."
+            f"Seu agente já pode ser testado neste chat e compartilhado com /link."
         )
     else:
         texto = (
@@ -1451,6 +1578,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Imagem: {imagem_texto}\n"
             f"Horário: {horario_texto}\n"
             f"Fallback: {fallback_texto}\n"
+            f"Clientes vinculados: {total_clientes}\n"
             f"FAQs: {len(faqs)}\n"
             f"Nenhum documento carregado.\n\n"
             f"Envie documentos neste chat ou use /upload para concluir a configuração."
@@ -1471,10 +1599,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_editar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra opções de edição."""
     mensagem = update.effective_message
-    user_id = update.effective_user.id
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
-        await mensagem.reply_text("❌ Seu agente ainda não foi configurado. Use /start primeiro.")
         return ConversationHandler.END
 
     context.user_data["empresa_editar_id"] = empresa["id"]
@@ -1555,11 +1681,11 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     pergunta = update.message.text.strip()
 
-    empresa = await obter_empresa_por_usuario(user_id)
+    empresa = await obter_empresa_do_usuario(user_id)
     if not empresa:
         await update.message.reply_text(
-            "👋 Seu agente ainda não foi configurado.\n"
-            "Envie /start para iniciar a configuração inicial."
+            "👋 Este atendimento ainda não está configurado para você.\n"
+            "Se você é o admin, envie /start. Se é cliente, abra o link recebido do atendimento."
         )
         return
 
@@ -1593,7 +1719,15 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if not empresa_tem_documentos(empresa["id"]):
-        await _responder_e_registrar(update, empresa, pergunta, _formatar_resposta_sem_base(empresa))
+        await _responder_e_registrar(
+            update,
+            empresa,
+            pergunta,
+            _formatar_resposta_sem_base(
+                empresa,
+                usuario_admin=bool(await obter_empresa_por_admin(user_id)),
+            ),
+        )
         return
 
     # Envia indicador de "digitando"
@@ -1724,6 +1858,7 @@ def get_handlers() -> list:
 
     return [
         CommandHandler("ajuda", cmd_ajuda),
+        CommandHandler("link", cmd_link),
         CommandHandler("painel", cmd_painel),
         CommandHandler("documentos", cmd_documentos),
         CommandHandler("status", cmd_status),

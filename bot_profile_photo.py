@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from config import IMAGES_DIR
+from validators import validar_tamanho_imagem
 
 SUPPORTED_IMAGE_EXTENSIONS = {
     ".jpg",
@@ -77,7 +78,8 @@ def empresa_tem_imagem(empresa_id: int) -> bool:
 
 
 def salvar_imagem_empresa(empresa_id: int, conteudo_bytes: bytes) -> str:
-    """Salva a imagem da empresa em JPG no disco."""
+    """Valida e salva a imagem da empresa em JPG no disco."""
+    validar_tamanho_imagem(len(conteudo_bytes))
     conteudo_jpg = converter_para_jpg(conteudo_bytes)
     pasta_empresa = os.path.join(IMAGES_DIR, str(empresa_id))
     os.makedirs(pasta_empresa, exist_ok=True)

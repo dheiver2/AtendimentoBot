@@ -1,4 +1,6 @@
+import asyncio
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -7,13 +9,14 @@ import database
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.original_db_path = database.DB_PATH
         database.DB_PATH = os.path.join(self.temp_dir.name, "bot.db")
         await database.init_db()
 
     async def asyncTearDown(self):
         database.DB_PATH = self.original_db_path
+        await asyncio.sleep(0.1)
         self.temp_dir.cleanup()
 
     async def test_cria_atualiza_e_busca_empresa(self):
@@ -39,6 +42,75 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empresa["ativo"], 0)
         self.assertEqual(empresa["horario_atendimento"], "Seg a Sex, 08h às 18h")
         self.assertEqual(empresa["fallback_contato"], "WhatsApp (11) 99999-9999")
+        self.assertTrue(empresa["link_token"])
+
+    async def test_vincula_cliente_e_resolve_empresa_por_link(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+        empresa_admin = await database.obter_empresa_por_admin(12345)
+
+        self.assertIsNotNone(empresa_admin)
+        self.assertEqual(empresa_admin["id"], empresa_id)
+        self.assertTrue(empresa_admin["link_token"])
+
+        empresa_por_token = await database.obter_empresa_por_link_token(empresa_admin["link_token"])
+        self.assertIsNotNone(empresa_por_token)
+        self.assertEqual(empresa_por_token["id"], empresa_id)
+
+        await database.vincular_cliente_empresa(empresa_id, 99999)
+
+        empresa_cliente = await database.obter_empresa_do_cliente(99999)
+        empresa_usuario = await database.obter_empresa_do_usuario(99999)
+        total_clientes = await database.contar_clientes_empresa(empresa_id)
+        admins = await database.listar_ids_admins()
+        clientes = await database.listar_ids_clientes()
+
+        self.assertIsNotNone(empresa_cliente)
+        self.assertEqual(empresa_cliente["id"], empresa_id)
+        self.assertEqual(empresa_usuario["id"], empresa_id)
+        self.assertEqual(total_clientes, 1)
+        self.assertEqual(admins, [12345])
+        self.assertEqual(clientes, [99999])
+
+    async def test_migra_tabela_legada_clientes_empresa(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+
+        with sqlite3.connect(database.DB_PATH) as conn:
+            conn.execute("DROP TABLE clientes_empresa")
+            conn.execute("""
+                CREATE TABLE clientes_empresa (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    empresa_id INTEGER NOT NULL,
+                    telegram_user_id INTEGER NOT NULL UNIQUE,
+                    vinculado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+                )
+            """)
+            conn.execute(
+                "INSERT INTO clientes_empresa (empresa_id, telegram_user_id) VALUES (?, ?)",
+                (empresa_id, 777),
+            )
+            conn.commit()
+
+        await database.init_db()
+        await asyncio.sleep(0.05)
+
+        empresa_cliente = await database.obter_empresa_do_cliente(777)
+        total_clientes = await database.contar_clientes_empresa(empresa_id)
+
+        self.assertIsNotNone(empresa_cliente)
+        self.assertEqual(empresa_cliente["id"], empresa_id)
+        self.assertEqual(total_clientes, 1)
+
+        with sqlite3.connect(database.DB_PATH) as conn:
+            colunas = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(clientes_empresa)").fetchall()
+            }
+
+        self.assertIn("cliente_telegram_user_id", colunas)
+        self.assertIn("criado_em", colunas)
+        self.assertNotIn("telegram_user_id", colunas)
+        self.assertNotIn("vinculado_em", colunas)
 
     async def test_documentos_nao_duplicam_por_nome_arquivo(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
@@ -57,6 +129,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         documento_id = await database.registrar_documento(empresa_id, "base.txt")
         await database.registrar_conversa(empresa_id, 999, "Oi", "Olá")
         await database.criar_faq(empresa_id, "Qual o horário?", "Seg a Sex")
+        await database.vincular_cliente_empresa(empresa_id, 777)
 
         excluido = await database.excluir_documento(empresa_id, documento_id)
         documento = await database.obter_documento_por_id(empresa_id, documento_id)
@@ -68,9 +141,11 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await database.excluir_empresa_com_dados(empresa_id)
 
         empresa = await database.obter_empresa_por_usuario(12345)
+        empresa_cliente = await database.obter_empresa_do_cliente(777)
         documentos = await database.listar_documentos(empresa_id)
 
         self.assertIsNone(empresa)
+        self.assertIsNone(empresa_cliente)
         self.assertEqual(documentos, [])
 
     async def test_cria_lista_e_limpa_faqs(self):

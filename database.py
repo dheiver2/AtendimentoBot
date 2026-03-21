@@ -1,12 +1,19 @@
+import secrets
+
 import aiosqlite
 from config import DB_PATH
 
 
-async def _obter_colunas_empresas(db: aiosqlite.Connection) -> set[str]:
-    """Retorna o conjunto de colunas atuais da tabela empresas."""
-    cursor = await db.execute("PRAGMA table_info(empresas)")
+async def _obter_colunas_tabela(db: aiosqlite.Connection, nome_tabela: str) -> set[str]:
+    """Retorna o conjunto de colunas atuais de uma tabela."""
+    cursor = await db.execute(f"PRAGMA table_info({nome_tabela})")
     rows = await cursor.fetchall()
     return {row[1] for row in rows}
+
+
+async def _obter_colunas_empresas(db: aiosqlite.Connection) -> set[str]:
+    """Retorna o conjunto de colunas atuais da tabela empresas."""
+    return await _obter_colunas_tabela(db, "empresas")
 
 
 async def _garantir_colunas_empresas(db: aiosqlite.Connection):
@@ -36,10 +43,92 @@ async def _garantir_colunas_empresas(db: aiosqlite.Connection):
     if "fallback_contato" not in colunas:
         await db.execute("ALTER TABLE empresas ADD COLUMN fallback_contato TEXT DEFAULT ''")
 
+    if "link_token" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN link_token TEXT")
+
+    colunas = await _obter_colunas_empresas(db)
+    if "link_token" in colunas:
+        cursor = await db.execute("""
+            SELECT id
+            FROM empresas
+            WHERE link_token IS NULL OR TRIM(link_token) = ''
+        """)
+        rows = await cursor.fetchall()
+        for row in rows:
+            await db.execute(
+                "UPDATE empresas SET link_token = ? WHERE id = ?",
+                (await _gerar_link_token_unico(db), row[0]),
+            )
+
     await db.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_empresas_telegram_user_id
         ON empresas(telegram_user_id)
     """)
+    await db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_empresas_link_token
+        ON empresas(link_token)
+    """)
+
+
+async def _criar_tabela_clientes_empresa(db: aiosqlite.Connection):
+    """Cria a tabela de vínculo entre clientes e empresa com o schema atual."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS clientes_empresa (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            empresa_id INTEGER NOT NULL,
+            cliente_telegram_user_id INTEGER NOT NULL UNIQUE,
+            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+        )
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_clientes_empresa_empresa_id
+        ON clientes_empresa(empresa_id)
+    """)
+
+
+async def _recriar_tabela_clientes_empresa(db: aiosqlite.Connection, colunas_existentes: set[str]):
+    """Recria a tabela de clientes preservando dados de schemas antigos."""
+    await db.execute("ALTER TABLE clientes_empresa RENAME TO clientes_empresa_legado")
+    await _criar_tabela_clientes_empresa(db)
+
+    coluna_usuario = (
+        "cliente_telegram_user_id"
+        if "cliente_telegram_user_id" in colunas_existentes
+        else "telegram_user_id"
+    )
+    coluna_data = (
+        "criado_em"
+        if "criado_em" in colunas_existentes
+        else "vinculado_em"
+        if "vinculado_em" in colunas_existentes
+        else None
+    )
+
+    colunas_destino = ["empresa_id", "cliente_telegram_user_id"]
+    colunas_origem = ["empresa_id", coluna_usuario]
+    if coluna_data:
+        colunas_destino.append("criado_em")
+        colunas_origem.append(coluna_data)
+
+    await db.execute(
+        f"""
+        INSERT OR IGNORE INTO clientes_empresa ({", ".join(colunas_destino)})
+        SELECT {", ".join(colunas_origem)}
+        FROM clientes_empresa_legado
+        """
+    )
+    await db.execute("DROP TABLE clientes_empresa_legado")
+
+
+async def _garantir_tabela_clientes_empresa(db: aiosqlite.Connection):
+    """Garante a tabela de vínculo entre clientes e empresa/admin."""
+    await _criar_tabela_clientes_empresa(db)
+    colunas = await _obter_colunas_tabela(db, "clientes_empresa")
+
+    colunas_esperadas = {"id", "empresa_id", "cliente_telegram_user_id", "criado_em"}
+    if not colunas_esperadas.issubset(colunas):
+        await _recriar_tabela_clientes_empresa(db, colunas)
 
 
 async def _deduplicar_documentos(db: aiosqlite.Connection):
@@ -54,6 +143,23 @@ async def _deduplicar_documentos(db: aiosqlite.Connection):
     """)
 
 
+def _gerar_link_token() -> str:
+    """Gera um token curto e seguro para deep link do Telegram."""
+    return secrets.token_urlsafe(16)
+
+
+async def _gerar_link_token_unico(db: aiosqlite.Connection) -> str:
+    """Gera um link token único para a tabela de empresas."""
+    while True:
+        token = _gerar_link_token()
+        cursor = await db.execute(
+            "SELECT 1 FROM empresas WHERE link_token = ? LIMIT 1",
+            (token,),
+        )
+        if not await cursor.fetchone():
+            return token
+
+
 async def init_db():
     """Inicializa o banco de dados com as tabelas necessárias."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -62,6 +168,7 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome TEXT NOT NULL,
                 telegram_user_id INTEGER NOT NULL UNIQUE,
+                link_token TEXT NOT NULL UNIQUE,
                 nome_bot TEXT DEFAULT 'Assistente',
                 saudacao TEXT DEFAULT 'Olá! Como posso ajudar você hoje?',
                 instrucoes TEXT DEFAULT 'Você é um assistente de atendimento ao cliente. Responda de forma educada e profissional.',
@@ -72,6 +179,7 @@ async def init_db():
             )
         """)
         await _garantir_colunas_empresas(db)
+        await _garantir_tabela_clientes_empresa(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS documentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,16 +221,17 @@ async def init_db():
 async def criar_empresa(nome: str, telegram_user_id: int) -> int:
     """Cria uma nova empresa e retorna o ID."""
     async with aiosqlite.connect(DB_PATH) as db:
+        link_token = await _gerar_link_token_unico(db)
         cursor = await db.execute(
-            "INSERT INTO empresas (nome, telegram_user_id) VALUES (?, ?)",
-            (nome, telegram_user_id),
+            "INSERT INTO empresas (nome, telegram_user_id, link_token) VALUES (?, ?, ?)",
+            (nome, telegram_user_id, link_token),
         )
         await db.commit()
         return cursor.lastrowid
 
 
-async def obter_empresa_por_usuario(telegram_user_id: int) -> dict | None:
-    """Busca empresa pelo ID do Telegram do usuário."""
+async def obter_empresa_por_admin(telegram_user_id: int) -> dict | None:
+    """Busca empresa pelo ID do Telegram do admin."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -133,6 +242,133 @@ async def obter_empresa_por_usuario(telegram_user_id: int) -> dict | None:
         if row:
             return dict(row)
         return None
+
+
+async def obter_empresa_por_usuario(telegram_user_id: int) -> dict | None:
+    """Mantém compatibilidade buscando a empresa do admin pelo usuário."""
+    return await obter_empresa_por_admin(telegram_user_id)
+
+
+async def obter_empresa_por_id(empresa_id: int) -> dict | None:
+    """Busca empresa pelo ID interno."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM empresas WHERE id = ?",
+            (empresa_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def obter_empresa_por_link_token(link_token: str) -> dict | None:
+    """Busca empresa pelo token compartilhável do link Telegram."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM empresas WHERE link_token = ?",
+            (link_token,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def vincular_cliente_empresa(empresa_id: int, cliente_telegram_user_id: int):
+    """Vincula ou move um cliente para a empresa do admin."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id
+            FROM clientes_empresa
+            WHERE cliente_telegram_user_id = ?
+            """,
+            (cliente_telegram_user_id,),
+        )
+        existente = await cursor.fetchone()
+        if existente:
+            await db.execute(
+                """
+                UPDATE clientes_empresa
+                SET empresa_id = ?
+                WHERE cliente_telegram_user_id = ?
+                """,
+                (empresa_id, cliente_telegram_user_id),
+            )
+        else:
+            await db.execute(
+                """
+                INSERT INTO clientes_empresa (empresa_id, cliente_telegram_user_id)
+                VALUES (?, ?)
+                """,
+                (empresa_id, cliente_telegram_user_id),
+            )
+        await db.commit()
+
+
+async def obter_empresa_do_cliente(cliente_telegram_user_id: int) -> dict | None:
+    """Busca a empresa associada a um cliente."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT e.*
+            FROM clientes_empresa c
+            JOIN empresas e ON e.id = c.empresa_id
+            WHERE c.cliente_telegram_user_id = ?
+            """,
+            (cliente_telegram_user_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def obter_empresa_do_usuario(telegram_user_id: int) -> dict | None:
+    """Resolve a empresa do usuário, priorizando o papel de admin."""
+    empresa = await obter_empresa_por_admin(telegram_user_id)
+    if empresa:
+        return empresa
+    return await obter_empresa_do_cliente(telegram_user_id)
+
+
+async def contar_clientes_empresa(empresa_id: int) -> int:
+    """Conta quantos clientes estão vinculados à empresa."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM clientes_empresa WHERE empresa_id = ?",
+            (empresa_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def listar_ids_admins() -> list[int]:
+    """Lista os chat IDs dos admins cadastrados."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT telegram_user_id
+            FROM empresas
+            WHERE telegram_user_id IS NOT NULL
+            ORDER BY telegram_user_id
+            """
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows if row and row[0] is not None]
+
+
+async def listar_ids_clientes() -> list[int]:
+    """Lista os chat IDs dos clientes vinculados a algum admin."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT cliente_telegram_user_id
+            FROM clientes_empresa
+            WHERE cliente_telegram_user_id IS NOT NULL
+            ORDER BY cliente_telegram_user_id
+            """
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows if row and row[0] is not None]
 
 
 async def atualizar_empresa(empresa_id: int, **kwargs):
@@ -284,5 +520,6 @@ async def excluir_empresa_com_dados(empresa_id: int):
         await db.execute("DELETE FROM conversas WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM faqs WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM documentos WHERE empresa_id = ?", (empresa_id,))
+        await db.execute("DELETE FROM clientes_empresa WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM empresas WHERE id = ?", (empresa_id,))
         await db.commit()

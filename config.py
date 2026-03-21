@@ -26,6 +26,9 @@ VECTOR_STORES_DIR = os.path.join(DATA_DIR, "vector_stores")
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
 DB_PATH = os.path.join(DATA_DIR, "bot.db")
 
+# ── Versão do bot ──
+BOT_VERSION = "1.0.0"
+
 # Garante que os diretórios existem
 for d in [DATA_DIR, PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
     os.makedirs(d, exist_ok=True)

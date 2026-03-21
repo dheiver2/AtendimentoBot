@@ -3,12 +3,12 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram import BotCommand, BotCommandScopeAllPrivateChats, MenuButtonCommands
 from telegram.ext import ApplicationBuilder
 
 from config import BUNDLED_ENV_PATH, ENV_PATH
-from database import init_db
+from database import init_db, listar_ids_admins, listar_ids_clientes
 from handlers import get_handlers
+from telegram_commands import configurar_menu_nativo_padrao, sincronizar_comandos_existentes
 
 load_dotenv(BUNDLED_ENV_PATH)
 if ENV_PATH != BUNDLED_ENV_PATH:
@@ -21,36 +21,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def obter_comandos_nativos() -> list[BotCommand]:
-    """Retorna a lista de comandos nativos exibidos pelo Telegram."""
-    return [
-        BotCommand("start", "Iniciar ou abrir seu agente"),
-        BotCommand("painel", "Abrir o painel principal"),
-        BotCommand("upload", "Enviar novos documentos"),
-        BotCommand("imagem", "Atualizar a imagem do agente"),
-        BotCommand("pausar", "Pausar o agente"),
-        BotCommand("ativar", "Ativar o agente"),
-        BotCommand("horario", "Definir horário de atendimento"),
-        BotCommand("fallback", "Definir contato humano"),
-        BotCommand("faq", "Gerenciar perguntas frequentes"),
-        BotCommand("documentos", "Gerenciar a base de conhecimento"),
-        BotCommand("editar", "Editar a configuração do agente"),
-        BotCommand("status", "Ver o status atual"),
-        BotCommand("reset", "Reconfigurar do zero"),
-        BotCommand("ajuda", "Ver ajuda rápida"),
-    ]
-
-
 async def post_init(application):
     """Callback executado após a inicialização do bot."""
     await init_db()
     logger.info("Banco de dados inicializado.")
-    await application.bot.set_my_commands(
-        obter_comandos_nativos(),
-        scope=BotCommandScopeAllPrivateChats(),
-    )
-    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    logger.info("Menu nativo do Telegram configurado.")
+    try:
+        await configurar_menu_nativo_padrao(application.bot)
+
+        admins = await listar_ids_admins()
+        clientes = await listar_ids_clientes()
+        await sincronizar_comandos_existentes(application.bot, admins, clientes)
+
+        logger.info(
+            "Menu nativo do Telegram configurado. Admins sincronizados: %s. Clientes sincronizados: %s.",
+            len(admins),
+            len(clientes),
+        )
+    except Exception as e:
+        logger.warning("Falha ao configurar o menu nativo do Telegram: %s", e, exc_info=True)
 
 
 def main():

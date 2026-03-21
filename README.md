@@ -1,10 +1,17 @@
 # AtendimentoBot
 
-Bot de atendimento no Telegram com onboarding por usuário, RAG com Gemini e upload de documentos.
+Bot de atendimento no Telegram com dois perfis:
+
+- `admin`: configura a empresa, o agente, os documentos e gera o link de atendimento
+- `cliente`: entra pelo link enviado pelo admin e usa o bot apenas para conversar
 
 ## O que faz
 
-- Cada usuário configura o próprio agente com `/start`
+- O admin configura o atendimento com `/start`
+- O admin gera um link de atendimento com `/link`
+- O cliente abre esse link e conversa normalmente no mesmo bot
+- O menu de comandos `/` muda conforme o perfil do chat: admin vê gestão, cliente vê apenas ajuda básica
+- O RAG ajusta o tamanho da resposta conforme a pergunta do cliente: perguntas simples recebem respostas curtas, perguntas explicativas recebem respostas mais completas
 - Indexa documentos em `.pdf`, `.docx`, `.pptx`, `.txt`, `.md` e `.csv`
 - Permite gerenciar a base com `/documentos`
 - Permite definir a imagem do próprio agente com `/imagem`
@@ -89,15 +96,18 @@ O binário final fica em `dist/AtendimentoBot`.
 
 ## Uso
 
-1. Abra o bot no Telegram e envie `/start`
-2. Faça o onboarding
-3. Envie documentos
-4. Faça perguntas no chat para testar
+1. O admin abre o bot no Telegram e envia `/start`
+2. O admin faz o onboarding da empresa
+3. O admin envia documentos, configura FAQ, horário, fallback e imagem
+4. O admin usa `/link` para gerar o link dos clientes
+5. O admin envia esse link aos clientes
+6. O cliente abre o link e usa o bot somente para conversar
 
 ## Comandos
 
-- `/start` iniciar ou abrir o agente
-- `/painel` abrir o painel principal
+- `/start` iniciar a configuração do admin ou abrir o atendimento do cliente
+- `/link` gerar o link de atendimento para clientes
+- `/painel` abrir o painel principal do admin
 - `/upload` enviar novos documentos
 - `/documentos` gerenciar a base
 - `/imagem` atualizar a imagem do agente
@@ -110,3 +120,5 @@ O binário final fica em `dist/AtendimentoBot`.
 - `/status` ver status atual
 - `/reset` reconfigurar do zero
 - `/ajuda` ver ajuda rápida
+
+Clientes não usam comandos de gestão. Depois de entrarem pelo link, o menu `/` mostra apenas as opções básicas do cliente e o restante da conversa é por mensagens normais no Telegram.

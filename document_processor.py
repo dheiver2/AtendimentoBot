@@ -7,6 +7,7 @@ from pptx import Presentation
 from pypdf import PdfReader
 
 from config import PDFS_DIR
+from validators import sanitizar_nome_arquivo, validar_tamanho_documento
 
 SUPPORTED_EXTENSIONS = {
     ".pdf": "PDF",
@@ -112,7 +113,10 @@ def dividir_texto_em_chunks(texto: str, chunk_size: int = 1000, chunk_overlap: i
 
 
 def processar_documento(empresa_id: int, nome_arquivo: str, conteudo_bytes: bytes) -> list[str]:
-    """Pipeline completo: salva, extrai texto e divide em chunks."""
+    """Pipeline completo: valida, salva, extrai texto e divide em chunks."""
+    nome_arquivo = sanitizar_nome_arquivo(nome_arquivo)
+    validar_tamanho_documento(len(conteudo_bytes), nome_arquivo)
+
     extensao = Path(nome_arquivo).suffix.lower()
     if extensao not in SUPPORTED_EXTENSIONS:
         raise ValueError(
