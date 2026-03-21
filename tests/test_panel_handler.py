@@ -1,0 +1,161 @@
+"""Testes para handlers/panel.py — painel, ajuda, link, status."""
+import unittest
+from unittest.mock import AsyncMock, patch, MagicMock
+
+from tests.helpers import make_update, make_context, make_empresa
+
+
+class CmdPainelTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.panel._obter_empresa_admin_ou_responder", return_value=None)
+    async def test_sem_empresa(self, mock_admin):
+        from handlers.panel import cmd_painel
+        update = make_update()
+        ctx = make_context()
+        await cmd_painel(update, ctx)
+        update.effective_message.reply_text.assert_not_called()
+
+    @patch("handlers.panel._obter_empresa_admin_ou_responder")
+    @patch("handlers.panel.listar_documentos", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.listar_faqs", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.contar_clientes_empresa", new_callable=AsyncMock, return_value=5)
+    @patch("handlers.panel.empresa_tem_documentos", return_value=True)
+    @patch("handlers.panel.empresa_tem_imagem", return_value=False)
+    async def test_painel_completo(self, mock_img, mock_docs, mock_clientes, mock_faqs, mock_list_docs, mock_admin):
+        from handlers.panel import cmd_painel
+        mock_admin.return_value = make_empresa(nome="TestCorp")
+        update = make_update()
+        update.callback_query = None
+        ctx = make_context()
+        await cmd_painel(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("TestCorp", texto)
+        self.assertIn("5", texto)
+
+    @patch("handlers.panel._obter_empresa_admin_ou_responder")
+    @patch("handlers.panel.listar_documentos", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.listar_faqs", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.contar_clientes_empresa", new_callable=AsyncMock, return_value=0)
+    @patch("handlers.panel.empresa_tem_documentos", return_value=False)
+    @patch("handlers.panel.empresa_tem_imagem", return_value=False)
+    async def test_painel_sem_documentos_mostra_status_incompleto(self, mock_img, mock_docs, mock_clientes, mock_faqs, mock_list_docs, mock_admin):
+        from handlers.panel import cmd_painel
+        mock_admin.return_value = make_empresa()
+        update = make_update()
+        update.callback_query = None
+        ctx = make_context()
+        await cmd_painel(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Sem documentos", texto)
+
+
+class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.panel.obter_empresa_por_admin")
+    @patch("handlers.panel.obter_empresa_do_cliente", return_value=None)
+    async def test_ajuda_admin(self, mock_cliente, mock_admin):
+        from handlers.panel import cmd_ajuda
+        mock_admin.return_value = make_empresa()
+        update = make_update()
+        ctx = make_context()
+        await cmd_ajuda(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("/painel", texto)
+
+    @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.panel.obter_empresa_do_cliente")
+    async def test_ajuda_cliente(self, mock_cliente, mock_admin):
+        from handlers.panel import cmd_ajuda
+        mock_cliente.return_value = make_empresa(nome="EmpCliente")
+        update = make_update()
+        ctx = make_context()
+        await cmd_ajuda(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("EmpCliente", texto)
+
+    @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.panel.obter_empresa_do_cliente", return_value=None)
+    async def test_ajuda_desconhecido(self, mock_cliente, mock_admin):
+        from handlers.panel import cmd_ajuda
+        update = make_update()
+        ctx = make_context()
+        await cmd_ajuda(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("/start", texto)
+
+
+class CmdLinkTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.panel._obter_empresa_admin_ou_responder", return_value=None)
+    async def test_sem_empresa(self, mock_admin):
+        from handlers.panel import cmd_link
+        update = make_update()
+        ctx = make_context()
+        await cmd_link(update, ctx)
+
+    @patch("handlers.panel._obter_empresa_admin_ou_responder")
+    async def test_gera_link(self, mock_admin):
+        from handlers.panel import cmd_link
+        mock_admin.return_value = make_empresa(link_token="tok123")
+        update = make_update()
+        ctx = make_context()
+        await cmd_link(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("t.me/test_bot?start=tok123", texto)
+
+
+class CmdStatusTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.panel._obter_empresa_admin_ou_responder")
+    @patch("handlers.panel.empresa_tem_documentos", return_value=True)
+    @patch("handlers.panel.listar_documentos", new_callable=AsyncMock, return_value=[{"id": 1}])
+    @patch("handlers.panel.listar_faqs", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.contar_clientes_empresa", new_callable=AsyncMock, return_value=2)
+    @patch("handlers.panel.empresa_tem_imagem", return_value=True)
+    @patch("handlers.panel._enviar_preview_imagem_empresa", new_callable=AsyncMock)
+    async def test_status_configurado(self, mock_preview, mock_img, mock_clientes, mock_faqs, mock_docs, mock_tem, mock_admin):
+        from handlers.panel import cmd_status
+        mock_admin.return_value = make_empresa(nome="Acme")
+        update = make_update()
+        ctx = make_context()
+        await cmd_status(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("CONFIGURADO", texto)
+        mock_preview.assert_called_once()
+
+    @patch("handlers.panel._obter_empresa_admin_ou_responder")
+    @patch("handlers.panel.empresa_tem_documentos", return_value=False)
+    @patch("handlers.panel.listar_documentos", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.listar_faqs", new_callable=AsyncMock, return_value=[])
+    @patch("handlers.panel.contar_clientes_empresa", new_callable=AsyncMock, return_value=0)
+    @patch("handlers.panel.empresa_tem_imagem", return_value=False)
+    async def test_status_incompleto(self, mock_img, mock_clientes, mock_faqs, mock_docs, mock_tem, mock_admin):
+        from handlers.panel import cmd_status
+        mock_admin.return_value = make_empresa()
+        update = make_update()
+        ctx = make_context()
+        await cmd_status(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("INCOMPLETO", texto)
+
+
+class PainelCallbacksTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.panel.cmd_painel", new_callable=AsyncMock)
+    async def test_refresh_callback(self, mock_painel):
+        from handlers.panel import painel_refresh_callback
+        update = make_update(callback_data="painel_refresh")
+        ctx = make_context()
+        await painel_refresh_callback(update, ctx)
+        mock_painel.assert_called_once()
+
+    @patch("handlers.panel.cmd_status", new_callable=AsyncMock)
+    async def test_status_callback(self, mock_status):
+        from handlers.panel import painel_status_callback
+        update = make_update(callback_data="painel_status")
+        ctx = make_context()
+        await painel_status_callback(update, ctx)
+        mock_status.assert_called_once()
+
+    @patch("handlers.panel.cmd_ajuda", new_callable=AsyncMock)
+    async def test_ajuda_callback(self, mock_ajuda):
+        from handlers.panel import painel_ajuda_callback
+        update = make_update(callback_data="painel_ajuda")
+        ctx = make_context()
+        await painel_ajuda_callback(update, ctx)
+        mock_ajuda.assert_called_once()

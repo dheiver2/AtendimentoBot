@@ -1,0 +1,183 @@
+"""Testes para handlers/agent.py — interação com o agente RAG."""
+import unittest
+from unittest.mock import AsyncMock, patch, MagicMock
+
+from tests.helpers import make_update, make_context, make_empresa
+
+
+class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
+    """Testes para o handler principal interagir_com_agente."""
+
+    def _empresa(self, **kw):
+        return make_empresa(**kw)
+
+    @patch("handlers.agent.verificar_rate_limit", return_value="⏳ muito rápido")
+    async def test_rate_limit_bloqueia(self, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        update = make_update("Olá")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        update.message.reply_text.assert_called_once_with("⏳ muito rápido")
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", side_effect=__import__("validators").InputValidationError("Campo vazio"))
+    async def test_validacao_mensagem_falha(self, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        update = make_update("")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        update.message.reply_text.assert_called_once()
+        self.assertIn("Campo vazio", update.message.reply_text.call_args[0][0])
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="Qual o preço?")
+    @patch("handlers.agent.obter_empresa_do_usuario", return_value=None)
+    async def test_usuario_sem_empresa(self, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        update = make_update("Qual o preço?")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        self.assertIn("não está configurado", update.message.reply_text.call_args[0][0])
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="Oi")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_agente_pausado_retorna_mensagem(self, mock_reg, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa(ativo=0, horario_atendimento="Seg a Sex")
+        update = make_update("Oi")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("pausado", resposta)
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="quero falar com atendente")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_pedido_humano_retorna_fallback(self, mock_reg, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa(fallback_contato="suporte@test.com")
+        update = make_update("quero falar com atendente")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("suporte@test.com", resposta)
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="qual o horario")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_pergunta_horario_retorna_horario(self, mock_reg, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa(horario_atendimento="Seg a Sex 9h-18h")
+        update = make_update("qual o horario")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("Seg a Sex 9h-18h", resposta)
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="prazo de entrega?")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs")
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_faq_match_retorna_resposta(self, mock_reg, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        mock_faqs.return_value = [{"pergunta": "Qual é o prazo de entrega?", "resposta": "3 dias úteis"}]
+        update = make_update("prazo de entrega?")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertEqual(resposta, "3 dias úteis")
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="qual o preço?")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=False)
+    @patch("handlers.agent.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_sem_documentos_cliente_ve_mensagem_preparando(self, mock_reg, mock_adm, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("qual o preço?")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("sendo preparado", resposta)
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="preço do produto?")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=True)
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock, return_value="O produto custa R$50")
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_rag_responde_com_sucesso(self, mock_reg, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("preço do produto?")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("R$50", resposta)
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="pergunta qualquer")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=True)
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock, side_effect=RuntimeError("API error"))
+    async def test_rag_erro_envia_mensagem_generica(self, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("pergunta qualquer")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("erro", resposta.lower())
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="info")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=True)
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock, return_value="nao tenho essa informacao no contexto")
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_fallback_adicionado_quando_resposta_indica_falta_info(self, mock_reg, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa(fallback_contato="suporte@x.com")
+        update = make_update("info")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("suporte@x.com", resposta)
+
+
+class ResponderERegistrarTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_responde_e_registra(self, mock_reg):
+        from handlers.agent import _responder_e_registrar
+
+        update = make_update("Oi")
+        empresa = make_empresa()
+        await _responder_e_registrar(update, empresa, "Oi", "Olá!")
+        update.message.reply_text.assert_called_once_with("Olá!")
+        mock_reg.assert_called_once_with(empresa["id"], update.effective_user.id, "Oi", "Olá!")
