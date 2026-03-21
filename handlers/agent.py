@@ -154,10 +154,12 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     faqs = await listar_faqs(empresa["id"])
 
     if not bool(empresa.get("ativo", 1)):
+        await update.message.chat.send_action("typing")
         await _responder_e_registrar(update, empresa, pergunta, _formatar_resposta_pausado(empresa))
         return
 
     if empresa.get("fallback_contato") and _detectar_pedido_humano(pergunta):
+        await update.message.chat.send_action("typing")
         await _responder_e_registrar(
             update,
             empresa,
@@ -167,6 +169,7 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if empresa.get("horario_atendimento") and _detectar_pergunta_horario(pergunta):
+        await update.message.chat.send_action("typing")
         await _responder_e_registrar(
             update,
             empresa,
@@ -177,10 +180,12 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
 
     resposta_faq = _buscar_resposta_faq(pergunta, faqs)
     if resposta_faq:
+        await update.message.chat.send_action("typing")
         await _responder_e_registrar(update, empresa, pergunta, resposta_faq)
         return
 
     if not empresa_tem_documentos(empresa["id"]):
+        await update.message.chat.send_action("typing")
         await _responder_e_registrar(
             update,
             empresa,

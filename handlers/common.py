@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
     AGUARDANDO_FALLBACK,
     AGUARDANDO_FAQ_PERGUNTA,
     AGUARDANDO_FAQ_RESPOSTA,
-) = range(11)
+    AGUARDANDO_CONFIRMACAO_RESET,
+    AGUARDANDO_CONFIRMACAO_REGISTRO,
+) = range(13)
 
 
 def _limpar_estado_usuario(context: ContextTypes.DEFAULT_TYPE):
@@ -125,11 +127,26 @@ async def _obter_empresa_admin_ou_responder(
 
 async def _enviar_boas_vindas_cliente(mensagem, empresa: dict):
     """Envia a mensagem inicial para um cliente vinculado via link."""
-    texto = (
-        f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
-        f"{empresa['saudacao']}\n\n"
-        "Envie sua mensagem normalmente para conversar."
-    )
+    from vector_store import empresa_tem_documentos
+
+    tem_docs = empresa_tem_documentos(empresa["id"])
+
+    if tem_docs:
+        texto = (
+            f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
+            f"{empresa['saudacao']}\n\n"
+            "Envie sua mensagem normalmente para conversar."
+        )
+    else:
+        texto = (
+            f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
+            f"{empresa['saudacao']}\n\n"
+            "⚠️ Este atendimento ainda está sendo preparado pelo administrador. "
+            "Tente novamente em alguns instantes."
+        )
+        if empresa.get("fallback_contato"):
+            texto += f"\n\nSe precisar de ajuda imediata, entre em contato: {empresa['fallback_contato']}"
+
     await mensagem.reply_text(texto)
 
 

@@ -26,6 +26,7 @@ def obter_comandos_cliente() -> list[BotCommand]:
     """Comandos exibidos para clientes vinculados por link."""
     return [
         BotCommand("start", "Abrir o atendimento"),
+        BotCommand("sair", "Sair deste atendimento"),
         BotCommand("ajuda", "Ver ajuda rápida"),
     ]
 

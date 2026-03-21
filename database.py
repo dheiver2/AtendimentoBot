@@ -322,6 +322,17 @@ async def obter_empresa_do_cliente(cliente_telegram_user_id: int) -> dict | None
         return dict(row) if row else None
 
 
+async def desvincular_cliente(cliente_telegram_user_id: int) -> bool:
+    """Remove o vínculo de um cliente com sua empresa."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM clientes_empresa WHERE cliente_telegram_user_id = ?",
+            (cliente_telegram_user_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def obter_empresa_do_usuario(telegram_user_id: int) -> dict | None:
     """Resolve a empresa do usuário, priorizando o papel de admin."""
     empresa = await obter_empresa_por_admin(telegram_user_id)

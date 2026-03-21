@@ -9,6 +9,8 @@ from telegram.ext import (
 
 from .agent import interagir_com_agente
 from .common import (
+    AGUARDANDO_CONFIRMACAO_REGISTRO,
+    AGUARDANDO_CONFIRMACAO_RESET,
     AGUARDANDO_DOCUMENTO,
     AGUARDANDO_FALLBACK,
     AGUARDANDO_FAQ_PERGUNTA,
@@ -48,12 +50,17 @@ from .onboarding import (
     cancelar_registro,
     cmd_registrar,
     cmd_reset,
+    cmd_sair,
     cmd_start,
+    confirmar_registro_callback,
     pular_instrucoes,
     receber_instrucoes,
     receber_nome_bot,
     receber_nome_empresa,
     receber_saudacao,
+    recomecar_registro_callback,
+    reset_cancelar_callback,
+    reset_confirmar_callback,
 )
 from .panel import (
     cmd_ajuda,
@@ -104,6 +111,14 @@ def get_handlers() -> list:
             AGUARDANDO_INSTRUCOES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receber_instrucoes),
                 CommandHandler("pular", pular_instrucoes),
+            ],
+            AGUARDANDO_CONFIRMACAO_REGISTRO: [
+                CallbackQueryHandler(confirmar_registro_callback, pattern="^registro_confirmar$"),
+                CallbackQueryHandler(recomecar_registro_callback, pattern="^registro_recomecar$"),
+            ],
+            AGUARDANDO_CONFIRMACAO_RESET: [
+                CallbackQueryHandler(reset_confirmar_callback, pattern="^reset_confirmar$"),
+                CallbackQueryHandler(reset_cancelar_callback, pattern="^reset_cancelar$"),
             ],
         },
         fallbacks=[CommandHandler("cancelar", cancelar_registro)],
@@ -184,6 +199,7 @@ def get_handlers() -> list:
         CommandHandler("status", cmd_status),
         CommandHandler("pausar", cmd_pausar),
         CommandHandler("ativar", cmd_ativar),
+        CommandHandler("sair", cmd_sair),
         CallbackQueryHandler(painel_refresh_callback, pattern="^painel_refresh$"),
         CallbackQueryHandler(painel_documentos_callback, pattern="^painel_documentos$"),
         CallbackQueryHandler(painel_status_callback, pattern="^painel_status$"),

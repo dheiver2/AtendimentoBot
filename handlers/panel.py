@@ -116,6 +116,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💬 Este chat está vinculado ao atendimento de {empresa_cliente['nome']}.\n\n"
             "Aqui você não precisa usar comandos de gestão.\n"
             "Basta enviar sua mensagem normalmente para conversar com o bot.\n\n"
+            "Se quiser sair deste atendimento, use /sair.\n"
             "Se precisar de um novo acesso, peça o link novamente ao atendimento."
         )
     else:

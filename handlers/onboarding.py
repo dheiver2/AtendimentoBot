@@ -1,12 +1,13 @@
 """Handlers de onboarding — registro de empresa e configuração inicial."""
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import (
     criar_empresa,
     atualizar_empresa,
+    desvincular_cliente,
     excluir_empresa_com_dados,
     obter_empresa_do_cliente,
     obter_empresa_por_admin,
@@ -24,6 +25,8 @@ from validators import (
 from vector_store import empresa_tem_documentos
 
 from .common import (
+    AGUARDANDO_CONFIRMACAO_REGISTRO,
+    AGUARDANDO_CONFIRMACAO_RESET,
     AGUARDANDO_INSTRUCOES,
     AGUARDANDO_NOME_BOT,
     AGUARDANDO_NOME_EMPRESA,
@@ -143,13 +146,37 @@ async def cmd_registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Apaga a configuração atual do usuário e reinicia o onboarding."""
+    """Exibe confirmação antes de apagar a configuração do usuário."""
     mensagem = update.effective_message
     empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
         return ConversationHandler.END
 
     _limpar_estado_usuario(context)
+
+    botoes = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Sim, apagar tudo", callback_data="reset_confirmar"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="reset_cancelar"),
+        ]
+    ])
+    await mensagem.reply_text(
+        f"⚠️ Tem certeza que deseja apagar toda a configuração de *{empresa['nome']}*?\n\n"
+        "Isso irá remover documentos, FAQs, histórico e todos os dados associados. "
+        "Esta ação é irreversível.",
+        reply_markup=botoes,
+        parse_mode="Markdown",
+    )
+    return AGUARDANDO_CONFIRMACAO_RESET
+
+
+async def reset_confirmar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirma e executa o reset após aprovação do usuário."""
+    await update.callback_query.answer()
+    mensagem = update.effective_message
+    empresa = await _obter_empresa_admin_ou_responder(update)
+    if not empresa:
+        return ConversationHandler.END
 
     try:
         await excluir_empresa_com_dados(empresa["id"])
@@ -162,12 +189,22 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await mensagem.reply_text(
-        f"♻️ A configuração atual de {empresa['nome']} foi apagada.\n"
-        "Vamos configurar seu agente novamente."
+        f"♻️ A configuração de *{empresa['nome']}* foi apagada.\n"
+        "Vamos configurar seu agente novamente.",
+        parse_mode="Markdown",
     )
 
     await _sincronizar_comandos_do_chat(update, context, "padrao")
     return await _iniciar_onboarding(update, context)
+
+
+async def reset_cancelar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancela o reset e avisa o usuário."""
+    await update.callback_query.answer()
+    await update.effective_message.reply_text(
+        "✅ Reset cancelado. Sua configuração está intacta."
+    )
+    return ConversationHandler.END
 
 
 async def receber_nome_empresa(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -224,7 +261,7 @@ async def receber_saudacao(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receber_instrucoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Recebe as instruções personalizadas."""
+    """Recebe as instruções personalizadas e exibe o resumo para confirmação."""
     try:
         instrucoes = validar_instrucoes(update.message.text)
     except InputValidationError as e:
@@ -232,17 +269,44 @@ async def receber_instrucoes(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return AGUARDANDO_INSTRUCOES
 
     context.user_data["instrucoes"] = instrucoes
-    return await _finalizar_registro(update, context)
+    return await _mostrar_resumo_registro(update, context)
 
 
 async def pular_instrucoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pula as instruções, usando o padrão."""
+    """Pula as instruções, usando o padrão, e exibe o resumo para confirmação."""
     context.user_data["instrucoes"] = "Você é um assistente de atendimento ao cliente. Responda de forma educada e profissional."
-    return await _finalizar_registro(update, context)
+    return await _mostrar_resumo_registro(update, context)
 
 
-async def _finalizar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Finaliza o registro da empresa."""
+async def _mostrar_resumo_registro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Exibe o resumo da configuração para o admin revisar antes de confirmar."""
+    dados = context.user_data
+    instrucoes_resumidas = dados["instrucoes"]
+    if len(instrucoes_resumidas) > 100:
+        instrucoes_resumidas = instrucoes_resumidas[:100] + "..."
+
+    botoes = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar", callback_data="registro_confirmar"),
+            InlineKeyboardButton("🔄 Recomeçar", callback_data="registro_recomecar"),
+        ]
+    ])
+    await update.effective_message.reply_text(
+        "📋 *Revise sua configuração antes de confirmar:*\n\n"
+        f"📌 Empresa: {dados['nome_empresa']}\n"
+        f"🤖 Assistente: {dados['nome_bot']}\n"
+        f"👋 Saudação: {dados['saudacao']}\n"
+        f"📝 Instruções: {instrucoes_resumidas}\n\n"
+        "Confirma estas informações?",
+        reply_markup=botoes,
+        parse_mode="Markdown",
+    )
+    return AGUARDANDO_CONFIRMACAO_REGISTRO
+
+
+async def confirmar_registro_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirma e finaliza o registro da empresa."""
+    await update.callback_query.answer()
     user_id = update.effective_user.id
     dados = context.user_data
     formatos = listar_formatos_suportados()
@@ -256,11 +320,8 @@ async def _finalizar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     await _sincronizar_comandos_do_chat(update, context, "admin")
 
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         f"🎉 Empresa cadastrada com sucesso!\n\n"
-        f"📌 Empresa: {dados['nome_empresa']}\n"
-        f"🤖 Assistente: {dados['nome_bot']}\n"
-        f"👋 Saudação: {dados['saudacao']}\n\n"
         f"Agora envie seus documentos neste chat ou use /upload para iniciar o envio guiado.\n"
         "Use /link quando quiser gerar o link dos seus clientes.\n"
         f"Formatos aceitos: {formatos}.\n"
@@ -273,8 +334,49 @@ async def _finalizar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+async def recomecar_registro_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Descarta os dados e reinicia o onboarding do zero."""
+    await update.callback_query.answer()
+    _limpar_estado_usuario(context)
+    await update.effective_message.reply_text(
+        "🔄 Vamos recomeçar. Qual é o nome da sua empresa?"
+    )
+    return AGUARDANDO_NOME_EMPRESA
+
+
 async def cancelar_registro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancela o fluxo de registro."""
     _limpar_estado_usuario(context)
     await update.message.reply_text("❌ Registro cancelado.")
     return ConversationHandler.END
+
+
+async def cmd_sair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Desvincula o cliente do atendimento atual."""
+    user_id = update.effective_user.id
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    if empresa_admin:
+        await update.message.reply_text(
+            "🔒 Admins não podem usar /sair. Use /reset para reconfigurar do zero."
+        )
+        return
+
+    empresa = await obter_empresa_do_cliente(user_id)
+    if not empresa:
+        await update.message.reply_text(
+            "Você não está vinculado a nenhum atendimento no momento."
+        )
+        return
+
+    desvinculado = await desvincular_cliente(user_id)
+    if desvinculado:
+        await _sincronizar_comandos_do_chat(update, context, "padrao")
+        await update.message.reply_text(
+            f"✅ Você saiu do atendimento de *{empresa['nome']}*.\n\n"
+            "Se quiser entrar novamente, use o link de atendimento enviado pelo administrador.",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Não foi possível sair do atendimento agora. Tente novamente em instantes."
+        )
