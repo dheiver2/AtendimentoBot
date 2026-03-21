@@ -3,7 +3,7 @@ import logging
 
 from telegram import Update
 from telegram.error import BadRequest
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes
 
 from bot_profile_photo import empresa_tem_imagem, listar_formatos_imagem_suportados
 from database import (

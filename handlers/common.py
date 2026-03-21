@@ -12,7 +12,7 @@ from database import (
     obter_empresa_do_cliente,
     obter_empresa_por_admin,
 )
-from bot_profile_photo import empresa_tem_imagem, obter_caminho_imagem_empresa
+from bot_profile_photo import obter_caminho_imagem_empresa
 from telegram_commands import sincronizar_comandos_chat
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,16 @@
     {
       "label": "Instalar dependências",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m pip install --upgrade pip && ${workspaceFolder}/.venv/bin/python -m pip install -r requirements.txt",
+      "command": "python -m pip install --upgrade pip && python -m pip install -r requirements.txt",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Instalar dependências (dev)",
+      "type": "shell",
+      "command": "python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -13,7 +22,29 @@
     {
       "label": "Executar bot",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python main.py",
+      "command": "python main.py",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Executar testes",
+      "type": "shell",
+      "command": "python -m pytest tests/ -v",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Executar testes com cobertura",
+      "type": "shell",
+      "command": "python -m pytest tests/ -v --cov=. --cov-report=term-missing",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -27,6 +58,18 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Gerar executável Windows",
+      "type": "shell",
+      "command": ".\\build_exe.bat",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "windows": {
+        "command": ".\\build_exe.bat"
+      }
     }
   ]
 }

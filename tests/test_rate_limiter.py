@@ -1,6 +1,5 @@
 import time
 import unittest
-from unittest.mock import patch
 
 from rate_limiter import RateLimiter, verificar_rate_limit
 

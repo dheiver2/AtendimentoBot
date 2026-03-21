@@ -1,10 +1,34 @@
+# ── Variáveis de ambiente ──
 .env
+
+# ── Python ──
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+
+# ── Ambientes virtuais ──
+.venv/
+.venv*/
+venv/
+
+# ── Dados locais ──
 data/
 *.db
-.venv/
-venv/
-tmp_*
+
+# ── Build / distribuição ──
 build/
 dist/
+
+# ── Caches de ferramentas ──
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Temporários ──
+tmp_*
+*.tmp
+*.bak
+
+# ── IDE (extensões pessoais) ──
+*.code-workspace

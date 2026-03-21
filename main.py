@@ -3,9 +3,11 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram.ext import ApplicationBuilder
+from telegram import Update
+from telegram.error import Conflict
+from telegram.ext import ApplicationBuilder, ContextTypes
 
-from config import BUNDLED_ENV_PATH, ENV_PATH
+from config import BOT_VERSION, BUNDLED_ENV_PATH, ENV_PATH
 from database import init_db, listar_ids_admins, listar_ids_clientes
 from handlers import get_handlers
 from telegram_commands import configurar_menu_nativo_padrao, sincronizar_comandos_existentes
@@ -19,6 +21,29 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Trata erros globais não capturados pelos handlers."""
+    error = context.error
+
+    if isinstance(error, Conflict):
+        logger.critical(
+            "Outra instância do bot já está rodando com o mesmo token. "
+            "Encerre a outra instância antes de iniciar esta. Erro: %s",
+            error,
+        )
+        return
+
+    logger.error("Erro não tratado: %s", error, exc_info=error)
+
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "Desculpe, ocorreu um erro inesperado. Tente novamente em instantes."
+            )
+        except Exception:
+            pass
 
 
 async def post_init(application):
@@ -51,11 +76,12 @@ def main():
         raise ValueError("GOOGLE_API_KEY não configurado no .env")
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
+    app.add_error_handler(error_handler)
 
     for handler in get_handlers():
         app.add_handler(handler)
 
-    logger.info("Bot iniciado! Pressione Ctrl+C para parar.")
+    logger.info("AtendimentoBot v%s iniciado! Pressione Ctrl+C para parar.", BOT_VERSION)
     app.run_polling(drop_pending_updates=True)
 
 
