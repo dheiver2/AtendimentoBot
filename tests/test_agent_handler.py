@@ -158,17 +158,15 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.listar_faqs", return_value=[])
     @patch("handlers.agent.empresa_tem_documentos", return_value=True)
-    @patch(
-        "handlers.agent.gerar_resposta",
-        new_callable=AsyncMock,
-        side_effect=__import__("vector_store").VectorStoreIncompatibilityError(
-            "A base vetorial desta empresa foi criada com outro modelo de embeddings. Reindexe a base em /documentos > Reindexar Base para voltar a responder."
-        ),
-    )
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock)
     async def test_rag_incompatibilidade_do_indice_envia_orientacao(self, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
+        from vector_store import VectorStoreIncompatibilityError
 
         mock_emp.return_value = self._empresa()
+        mock_rag.side_effect = VectorStoreIncompatibilityError(
+            "A base vetorial desta empresa foi criada com outro modelo de embeddings. Reindexe a base em /documentos > Reindexar Base para voltar a responder."
+        )
         update = make_update("pergunta qualquer")
         ctx = make_context()
         await interagir_com_agente(update, ctx)
