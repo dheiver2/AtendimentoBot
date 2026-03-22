@@ -1,13 +1,13 @@
 import os
 import shutil
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from config import VECTOR_STORES_DIR
 
 
 def _get_embeddings():
-    modelo = os.getenv("GOOGLE_EMBEDDING_MODEL", "models/gemini-embedding-001")
-    return GoogleGenerativeAIEmbeddings(model=modelo)
+    modelo = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    return HuggingFaceEmbeddings(model_name=modelo)
 
 
 def _caminho_store(empresa_id: int) -> str:
