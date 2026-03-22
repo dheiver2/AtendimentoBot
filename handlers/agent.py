@@ -16,6 +16,7 @@ from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
 from validators import InputValidationError, validar_mensagem_usuario
 from vector_store import VectorStoreIncompatibilityError, empresa_tem_documentos
+from .common import _enviar_identidade_visual_empresa
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,19 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    usuario_admin = bool(await obter_empresa_por_admin(user_id))
+    if not usuario_admin:
+        await _enviar_identidade_visual_empresa(
+            update.message,
+            empresa,
+            context=context,
+            caption=(
+                f"🏢 {empresa['nome']}\n\n"
+                f"{empresa['saudacao']}\n\n"
+                "Você está no atendimento certo. A seguir, continuo sua conversa normalmente."
+            ),
+        )
+
     faqs = await listar_faqs(empresa["id"])
 
     if not bool(empresa.get("ativo", 1)):
@@ -192,7 +206,7 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
             pergunta,
             _formatar_resposta_sem_base(
                 empresa,
-                usuario_admin=bool(await obter_empresa_por_admin(user_id)),
+                usuario_admin=usuario_admin,
             ),
         )
         return

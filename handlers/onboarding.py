@@ -97,7 +97,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await vincular_cliente_empresa(empresa_link["id"], user_id)
         await _sincronizar_comandos_do_chat(update, context, "cliente")
+        context.user_data.pop("identidade_visual_enviada", None)
         await _enviar_boas_vindas_cliente(mensagem, empresa_link)
+        context.user_data["identidade_visual_enviada"] = True
         return ConversationHandler.END
 
     if empresa_admin:
@@ -119,7 +121,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if empresa_cliente:
         await _sincronizar_comandos_do_chat(update, context, "cliente")
+        context.user_data.pop("identidade_visual_enviada", None)
         await _enviar_boas_vindas_cliente(mensagem, empresa_cliente)
+        context.user_data["identidade_visual_enviada"] = True
         return ConversationHandler.END
 
     await _sincronizar_comandos_do_chat(update, context, "padrao")
@@ -370,6 +374,7 @@ async def cmd_sair(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     desvinculado = await desvincular_cliente(user_id)
     if desvinculado:
+        context.user_data.pop("identidade_visual_enviada", None)
         await _sincronizar_comandos_do_chat(update, context, "padrao")
         await update.message.reply_text(
             f"✅ Você saiu do atendimento de *{empresa['nome']}*.\n\n"

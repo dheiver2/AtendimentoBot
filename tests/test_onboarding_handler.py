@@ -39,6 +39,7 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
         with patch("handlers.onboarding._enviar_boas_vindas_cliente", new_callable=AsyncMock) as mock_bv:
             result = await cmd_start(update, ctx)
         self.assertEqual(result, ConversationHandler.END)
+        self.assertTrue(ctx.user_data["identidade_visual_enviada"])
 
     @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
@@ -71,6 +72,7 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
         result = await cmd_start(update, ctx)
         self.assertEqual(result, ConversationHandler.END)
         mock_vincular.assert_called_once()
+        self.assertTrue(ctx.user_data["identidade_visual_enviada"])
 
     @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)

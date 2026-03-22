@@ -45,9 +45,11 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="Oi")
     @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.agent._enviar_identidade_visual_empresa", new_callable=AsyncMock)
     @patch("handlers.agent.listar_faqs", return_value=[])
     @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
-    async def test_agente_pausado_retorna_mensagem(self, mock_reg, mock_faqs, mock_emp, mock_val, mock_rate):
+    async def test_agente_pausado_retorna_mensagem(self, mock_reg, mock_faqs, mock_identidade, mock_admin, mock_emp, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
 
         mock_emp.return_value = self._empresa(ativo=0, horario_atendimento="Seg a Sex")
@@ -56,6 +58,43 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         await interagir_com_agente(update, ctx)
         resposta = update.message.reply_text.call_args[0][0]
         self.assertIn("pausado", resposta)
+        mock_identidade.assert_called_once()
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="preço do produto?")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.agent._enviar_identidade_visual_empresa", new_callable=AsyncMock)
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=True)
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock, return_value="O produto custa R$50")
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_primeira_interacao_cliente_reenvia_identidade_visual(self, mock_reg, mock_rag, mock_docs, mock_faqs, mock_identidade, mock_admin, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("preço do produto?")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        mock_identidade.assert_called_once()
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="preço do produto?")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.obter_empresa_por_admin", return_value=make_empresa())
+    @patch("handlers.agent._enviar_identidade_visual_empresa", new_callable=AsyncMock)
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=True)
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock, return_value="O produto custa R$50")
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_admin_nao_reenvia_identidade_visual(self, mock_reg, mock_rag, mock_docs, mock_faqs, mock_identidade, mock_admin, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("preço do produto?")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        mock_identidade.assert_not_called()
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="quero falar com atendente")

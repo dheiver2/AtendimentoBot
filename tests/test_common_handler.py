@@ -1,4 +1,5 @@
 """Testes para handlers/common.py — utilitários compartilhados."""
+from io import BytesIO
 import unittest
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -84,11 +85,53 @@ class EnviarBoasVindasClienteTests(unittest.IsolatedAsyncioTestCase):
         from handlers.common import _enviar_boas_vindas_cliente
         msg = AsyncMock()
         empresa = make_empresa(nome="MinhaEmpresa", saudacao="Bem-vindo!")
-        await _enviar_boas_vindas_cliente(msg, empresa)
+        with patch("handlers.common._enviar_preview_imagem_empresa", new_callable=AsyncMock, return_value=False):
+            with patch("handlers.common._enviar_identidade_visual_empresa", new_callable=AsyncMock, return_value=False):
+                await _enviar_boas_vindas_cliente(msg, empresa)
         msg.reply_text.assert_called_once()
         texto = msg.reply_text.call_args[0][0]
         self.assertIn("MinhaEmpresa", texto)
         self.assertIn("Bem-vindo!", texto)
+
+    async def test_envia_imagem_quando_empresa_tem_identidade_visual(self):
+        from handlers.common import _enviar_boas_vindas_cliente
+
+        msg = AsyncMock()
+        empresa = make_empresa(id=7, nome="MinhaEmpresa", saudacao="Bem-vindo!")
+
+        with patch("handlers.common._enviar_identidade_visual_empresa", new_callable=AsyncMock, return_value=True) as mock_preview:
+            await _enviar_boas_vindas_cliente(msg, empresa)
+
+        mock_preview.assert_called_once()
+        msg.reply_text.assert_not_called()
+
+
+class IdentidadeVisualEmpresaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nao_reenvia_quando_ja_enviada_na_sessao(self):
+        from handlers.common import _enviar_identidade_visual_empresa
+
+        msg = AsyncMock()
+        empresa = make_empresa()
+        ctx = make_context(user_data={"identidade_visual_enviada": True})
+
+        enviado = await _enviar_identidade_visual_empresa(msg, empresa, context=ctx)
+
+        self.assertFalse(enviado)
+        msg.reply_photo.assert_not_called()
+
+    async def test_marca_sessao_quando_envia(self):
+        from handlers.common import _enviar_identidade_visual_empresa
+
+        msg = AsyncMock()
+        empresa = make_empresa()
+        ctx = make_context()
+
+        with patch("handlers.common._gerar_capa_empresa", return_value=BytesIO(b"jpg")):
+            enviado = await _enviar_identidade_visual_empresa(msg, empresa, context=ctx)
+
+        self.assertTrue(enviado)
+        self.assertTrue(ctx.user_data["identidade_visual_enviada"])
+        msg.reply_photo.assert_called_once()
 
 
 class SincronizarComandosChatTests(unittest.IsolatedAsyncioTestCase):

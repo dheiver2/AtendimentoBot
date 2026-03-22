@@ -1,11 +1,14 @@
 """Utilitários compartilhados entre os handlers do bot."""
+from io import BytesIO
 import logging
 import os
 import shutil
+import textwrap
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from config import IMAGES_DIR, PDFS_DIR, VECTOR_STORES_DIR
 from database import (
@@ -16,6 +19,7 @@ from bot_profile_photo import obter_caminho_imagem_empresa
 from telegram_commands import sincronizar_comandos_chat
 
 logger = logging.getLogger(__name__)
+IDENTIDADE_VISUAL_ENVIADA_KEY = "identidade_visual_enviada"
 
 # ── Estados do ConversationHandler ──
 (
@@ -131,37 +135,154 @@ async def _enviar_boas_vindas_cliente(mensagem, empresa: dict):
 
     tem_docs = empresa_tem_documentos(empresa["id"])
 
+    texto = _montar_texto_boas_vindas_cliente(empresa, tem_docs)
+    imagem_enviada = await _enviar_identidade_visual_empresa(
+        mensagem,
+        empresa,
+        caption=texto,
+    )
+    if not imagem_enviada:
+        await mensagem.reply_text(texto)
+
+
+def _montar_texto_boas_vindas_cliente(empresa: dict, tem_docs: bool) -> str:
+    """Monta o texto de boas-vindas do cliente conforme o estado da empresa."""
     if tem_docs:
-        texto = (
+        return (
             f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
             f"{empresa['saudacao']}\n\n"
             "Envie sua mensagem normalmente para conversar."
         )
-    else:
-        texto = (
-            f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
-            f"{empresa['saudacao']}\n\n"
-            "⚠️ Este atendimento ainda está sendo preparado pelo administrador. "
-            "Tente novamente em alguns instantes."
-        )
-        if empresa.get("fallback_contato"):
-            texto += f"\n\nSe precisar de ajuda imediata, entre em contato: {empresa['fallback_contato']}"
 
-    await mensagem.reply_text(texto)
+    texto = (
+        f"👋 Você está conectado ao atendimento de {empresa['nome']}.\n\n"
+        f"{empresa['saudacao']}\n\n"
+        "⚠️ Este atendimento ainda está sendo preparado pelo administrador. "
+        "Tente novamente em alguns instantes."
+    )
+    if empresa.get("fallback_contato"):
+        texto += f"\n\nSe precisar de ajuda imediata, entre em contato: {empresa['fallback_contato']}"
+    return texto
+
+
+def _obter_fonte(tamanho: int, negrito: bool = False):
+    """Carrega uma fonte legível quando disponível, com fallback seguro."""
+    caminhos = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if negrito else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if negrito else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arialbd.ttf" if negrito else "C:/Windows/Fonts/arial.ttf",
+    ]
+    for caminho in caminhos:
+        if os.path.exists(caminho):
+            try:
+                return ImageFont.truetype(caminho, tamanho)
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+
+def _quebrar_texto(draw: ImageDraw.ImageDraw, texto: str, fonte, largura_maxima: int) -> str:
+    """Quebra o texto em múltiplas linhas dentro da largura disponível."""
+    palavras = (texto or "").split()
+    if not palavras:
+        return ""
+
+    linhas: list[str] = []
+    atual = palavras[0]
+    for palavra in palavras[1:]:
+        candidato = f"{atual} {palavra}"
+        bbox = draw.textbbox((0, 0), candidato, font=fonte)
+        if bbox[2] - bbox[0] <= largura_maxima:
+            atual = candidato
+        else:
+            linhas.append(atual)
+            atual = palavra
+    linhas.append(atual)
+    return "\n".join(linhas)
+
+
+def _gerar_capa_empresa(empresa: dict) -> BytesIO:
+    """Gera uma capa visual da empresa com imagem, nome e saudação."""
+    largura, altura = 1080, 1350
+    caminho_imagem = obter_caminho_imagem_empresa(empresa["id"])
+
+    if os.path.exists(caminho_imagem):
+        with Image.open(caminho_imagem) as imagem:
+            base = ImageOps.fit(imagem.convert("RGB"), (largura, altura))
+    else:
+        base = Image.new("RGB", (largura, altura), color=(17, 38, 59))
+
+    capa = base.convert("RGBA")
+    overlay = Image.new("RGBA", capa.size, (0, 0, 0, 0))
+    draw_overlay = ImageDraw.Draw(overlay)
+    draw_overlay.rectangle((0, 0, largura, altura), fill=(8, 16, 28, 110))
+    draw_overlay.rounded_rectangle((60, 780, largura - 60, altura - 80), radius=36, fill=(10, 18, 30, 190))
+    capa = Image.alpha_composite(capa, overlay)
+
+    draw = ImageDraw.Draw(capa)
+    fonte_titulo = _obter_fonte(64, negrito=True)
+    fonte_subtitulo = _obter_fonte(30, negrito=False)
+    fonte_saudacao = _obter_fonte(40, negrito=False)
+
+    titulo = _quebrar_texto(draw, empresa["nome"], fonte_titulo, largura - 180)
+    saudacao = _quebrar_texto(draw, empresa.get("saudacao", ""), fonte_saudacao, largura - 180)
+    assistente = empresa.get("nome_bot", "Assistente")
+
+    draw.text((90, 830), "ATENDIMENTO", font=fonte_subtitulo, fill=(161, 199, 255))
+    draw.multiline_text((90, 885), titulo, font=fonte_titulo, fill=(255, 255, 255), spacing=12)
+    draw.text((90, 1060), f"Com {assistente}", font=fonte_subtitulo, fill=(196, 214, 232))
+    draw.multiline_text((90, 1115), saudacao, font=fonte_saudacao, fill=(235, 241, 247), spacing=10)
+
+    saida = BytesIO()
+    capa.convert("RGB").save(saida, format="JPEG", quality=92, optimize=True)
+    saida.seek(0)
+    return saida
+
+
+async def _enviar_identidade_visual_empresa(
+    mensagem,
+    empresa: dict,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
+    caption: str | None = None,
+    force: bool = False,
+) -> bool:
+    """Envia a identidade visual da empresa uma vez por sessão do cliente."""
+    if context and context.user_data.get(IDENTIDADE_VISUAL_ENVIADA_KEY) and not force:
+        return False
+
+    legenda = caption or (
+        f"🏢 {empresa['nome']}\n\n"
+        f"{empresa['saudacao']}\n\n"
+        "Envie sua mensagem normalmente para continuar o atendimento."
+    )
+    try:
+        capa = _gerar_capa_empresa(empresa)
+        await mensagem.reply_photo(photo=capa, caption=legenda)
+        if context is not None:
+            context.user_data[IDENTIDADE_VISUAL_ENVIADA_KEY] = True
+        return True
+    except Exception as e:
+        logger.warning(
+            "Falha ao gerar/enviar identidade visual da empresa %s: %s",
+            empresa["id"],
+            e,
+        )
+        return False
 
 
 async def _enviar_preview_imagem_empresa(
     mensagem,
     empresa_id: int,
     legenda: str,
-):
+ ) -> bool:
     """Envia a imagem atual da empresa como preview, quando existir."""
     caminho = obter_caminho_imagem_empresa(empresa_id)
     if not os.path.exists(caminho):
-        return
+        return False
 
     with open(caminho, "rb") as arquivo:
         await mensagem.reply_photo(photo=arquivo, caption=legenda)
+    return True
 
 
 async def _editar_ou_responder(update: Update, texto: str, reply_markup: InlineKeyboardMarkup | None = None):
