@@ -242,6 +242,7 @@ Sempre teste novamente depois de:
 | Comando | Uso |
 |---|---|
 | `/start` | Inicia a configuração ou reabre o fluxo principal |
+| `/meuid` | Mostra o ID do Telegram do usuário atual |
 | `/painel` | Abre o painel principal |
 | `/link` | Gera o link para clientes |
 | `/upload` | Inicia o envio guiado de documentos |
@@ -274,6 +275,7 @@ O cliente usa o bot principalmente para conversar.
 Os comandos mais comuns são:
 
 - `/start` para abrir novamente o atendimento;
+- `/meuid` para ver seu ID do Telegram;
 - `/ajuda` para ver instruções rápidas;
 - `/sair` para sair do atendimento atual.
 
@@ -297,6 +299,16 @@ Se quiser desvincular seu usuário desse atendimento, use:
 ```
 
 Para entrar novamente depois disso, será necessário abrir o link enviado pela empresa.
+
+### 5. Como descobrir seu ID no Telegram
+
+Se a empresa pedir seu identificador para suporte ou testes, use:
+
+```text
+/meuid
+```
+
+O bot responderá com o seu ID do Telegram e o ID do chat atual.
 
 ## Limites importantes
 

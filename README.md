@@ -159,6 +159,7 @@ O binário final fica em `dist/AtendimentoBot`.
 | Comando | Descrição |
 |---------|-----------|
 | `/start` | Iniciar configuração (admin) ou abrir atendimento (cliente) |
+| `/meuid` | Mostrar o ID do Telegram do usuário atual |
 | `/painel` | Painel de gerenciamento com todas as opções |
 | `/link` | Gerar o link de atendimento para clientes |
 | `/upload` | Enviar novos documentos |
@@ -174,7 +175,7 @@ O binário final fica em `dist/AtendimentoBot`.
 | `/reset` | Reconfigurar do zero |
 | `/ajuda` | Ver ajuda rápida |
 
-Clientes não usam comandos de gestão. Depois de entrarem pelo link, o menu `/` mostra apenas as opções básicas do cliente.
+Clientes não usam comandos de gestão. Depois de entrarem pelo link, o menu `/` mostra apenas as opções básicas do cliente, incluindo `/meuid` para informar o próprio ID quando necessário.
 
 ## Segurança
 

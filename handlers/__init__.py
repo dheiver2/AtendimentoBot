@@ -65,6 +65,7 @@ from .onboarding import (
 from .panel import (
     cmd_ajuda,
     cmd_link,
+    cmd_meuid,
     cmd_painel,
     cmd_status,
     painel_ajuda_callback,
@@ -193,6 +194,7 @@ def get_handlers() -> list:
 
     return [
         CommandHandler("ajuda", cmd_ajuda),
+        CommandHandler("meuid", cmd_meuid),
         CommandHandler("link", cmd_link),
         CommandHandler("painel", cmd_painel),
         CommandHandler("documentos", cmd_documentos),

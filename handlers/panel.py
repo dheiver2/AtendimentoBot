@@ -92,6 +92,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto = (
             "📋 Comandos do admin:\n\n"
             "/start — Abrir a configuração inicial\n"
+            "/meuid — Mostrar seu ID do Telegram\n"
             "/link — Gerar o link de atendimento para os clientes\n"
             "/painel — Painel de gerenciamento\n"
             "/upload — Entrar no modo de envio de documentos\n"
@@ -116,6 +117,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💬 Este chat está vinculado ao atendimento de {empresa_cliente['nome']}.\n\n"
             "Aqui você não precisa usar comandos de gestão.\n"
             "Basta enviar sua mensagem normalmente para conversar com o bot.\n\n"
+            "Se precisar informar seu identificador ao atendimento, use /meuid.\n"
             "Se quiser sair deste atendimento, use /sair.\n"
             "Se precisar de um novo acesso, peça o link novamente ao atendimento."
         )
@@ -124,9 +126,28 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 Este bot possui dois perfis:\n\n"
             "- admin: configura a empresa, documentos, FAQ e horário\n"
             "- cliente: usa apenas o link enviado pelo admin para conversar\n\n"
+            "Use /meuid para descobrir seu ID do Telegram.\n"
             "Se você é o admin, envie /start para iniciar a configuração."
         )
     await mensagem.reply_text(texto)
+
+
+async def cmd_meuid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra o ID do usuário e do chat atual para facilitar suporte e testes."""
+    mensagem = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not mensagem or not user or not chat:
+        return
+
+    texto = (
+        "🆔 Seus identificadores neste bot:\n\n"
+        f"Usuário Telegram: `{user.id}`\n"
+        f"Chat atual: `{chat.id}`\n\n"
+        "Envie esse número ao administrador se ele precisar vincular ou conferir seu acesso."
+    )
+    await mensagem.reply_text(texto, parse_mode="Markdown")
 
 
 async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):

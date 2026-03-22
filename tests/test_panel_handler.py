@@ -59,6 +59,7 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         await cmd_ajuda(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("/painel", texto)
+        self.assertIn("/meuid", texto)
 
     @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
     @patch("handlers.panel.obter_empresa_do_cliente")
@@ -70,6 +71,7 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         await cmd_ajuda(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("EmpCliente", texto)
+        self.assertIn("/meuid", texto)
 
     @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
     @patch("handlers.panel.obter_empresa_do_cliente", return_value=None)
@@ -80,6 +82,22 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         await cmd_ajuda(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("/start", texto)
+        self.assertIn("/meuid", texto)
+
+
+class CmdMeuIdTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exibe_ids_do_usuario_e_chat(self):
+        from handlers.panel import cmd_meuid
+
+        update = make_update(user_id=123456789)
+        ctx = make_context()
+        await cmd_meuid(update, ctx)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        kwargs = update.effective_message.reply_text.call_args.kwargs
+
+        self.assertIn("123456789", texto)
+        self.assertIn("Chat atual", texto)
+        self.assertEqual(kwargs["parse_mode"], "Markdown")
 
 
 class CmdLinkTests(unittest.IsolatedAsyncioTestCase):
