@@ -15,7 +15,7 @@ from database import (
 from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
 from validators import InputValidationError, validar_mensagem_usuario
-from vector_store import empresa_tem_documentos
+from vector_store import VectorStoreIncompatibilityError, empresa_tem_documentos
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,9 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
 
         await _responder_e_registrar(update, empresa, pergunta, resposta)
 
+    except VectorStoreIncompatibilityError as e:
+        logger.warning("Base vetorial incompatível para a empresa %s: %s", empresa["id"], e)
+        await update.message.reply_text(str(e))
     except Exception as e:
         logger.error("Erro ao gerar resposta: %s", e, exc_info=True)
         await update.message.reply_text(

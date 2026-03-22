@@ -2,9 +2,17 @@ import os
 import shutil
 
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except ImportError:  # Compatibilidade temporária com ambientes ainda não atualizados.
+    from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from config import VECTOR_STORES_DIR
+
+
+class VectorStoreIncompatibilityError(RuntimeError):
+    """Erro levantado quando o índice FAISS é incompatível com o embedding atual."""
 
 
 def _get_embeddings():
@@ -67,7 +75,21 @@ def buscar_contexto(empresa_id: int, pergunta: str, k: int = 4) -> list[str]:
         return []
 
     store = FAISS.load_local(caminho, embeddings, allow_dangerous_deserialization=True)
-    docs = store.similarity_search(pergunta, k=k)
+    dimensao_consulta = len(embeddings.embed_query(pergunta))
+    dimensao_indice = store.index.d
+    if dimensao_consulta != dimensao_indice:
+        raise VectorStoreIncompatibilityError(
+            "A base vetorial desta empresa foi criada com outro modelo de embeddings. "
+            "Reindexe a base em /documentos > Reindexar Base para voltar a responder."
+        )
+
+    try:
+        docs = store.similarity_search(pergunta, k=k)
+    except AssertionError as exc:
+        raise VectorStoreIncompatibilityError(
+            "A base vetorial desta empresa ficou incompatível com o embedding atual. "
+            "Reindexe a base em /documentos > Reindexar Base para corrigir."
+        ) from exc
     return [doc.page_content for doc in docs]
 
 

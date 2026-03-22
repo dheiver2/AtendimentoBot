@@ -93,8 +93,29 @@ class BuscarContextoTests(unittest.TestCase):
         mock_doc1.page_content = "Resposta 1"
         mock_doc2 = MagicMock()
         mock_doc2.page_content = "Resposta 2"
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_query.return_value = [0.1, 0.2]
+        mock_emb.return_value = mock_embeddings
         mock_store = MagicMock()
+        mock_store.index.d = 2
         mock_store.similarity_search.return_value = [mock_doc1, mock_doc2]
         mock_faiss.load_local.return_value = mock_store
         resultado = vs.buscar_contexto(1, "pergunta")
         self.assertEqual(resultado, ["Resposta 1", "Resposta 2"])
+
+    @patch("vector_store._get_embeddings")
+    @patch("vector_store.os.path.exists", return_value=True)
+    @patch("vector_store.FAISS")
+    def test_mismatch_de_dimensao_gera_erro_claro(self, mock_faiss, mock_exists, mock_emb):
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_query.return_value = [0.1, 0.2, 0.3]
+        mock_emb.return_value = mock_embeddings
+
+        mock_store = MagicMock()
+        mock_store.index.d = 2
+        mock_faiss.load_local.return_value = mock_store
+
+        with self.assertRaises(vs.VectorStoreIncompatibilityError) as ctx:
+            vs.buscar_contexto(1, "pergunta")
+
+        self.assertIn("Reindexar Base", str(ctx.exception))
