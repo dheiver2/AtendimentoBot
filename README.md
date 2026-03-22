@@ -12,11 +12,14 @@ Bot de atendimento ao cliente no Telegram com RAG (Retrieval-Augmented Generatio
 ## Funcionalidades
 
 - Onboarding guiado para configuração da empresa e agente
-- RAG com Google Gemini que ajusta o tamanho da resposta conforme a complexidade da pergunta
+- RAG com OpenRouter e fallback entre modelos configurados no `.env`
 - Indexação de documentos em `.pdf`, `.docx`, `.pptx`, `.txt`, `.md` e `.csv`
 - FAQ com correspondência inteligente (matching por similaridade)
 - Gestão de documentos via painel inline (`/documentos`)
 - Imagem personalizada do agente (`/imagem`)
+- Identidade visual por empresa na conversa do cliente
+- Capa automática com imagem, nome e saudação da empresa
+- Reenvio da identidade visual na primeira interação do cliente
 - Horário de atendimento e fallback para atendimento humano
 - Pausar/ativar agente por usuário
 - Deep links para vincular clientes ao atendimento
@@ -32,8 +35,8 @@ Bot de atendimento ao cliente no Telegram com RAG (Retrieval-Augmented Generatio
 main.py                  → Ponto de entrada, configura polling
 config.py                → Caminhos, diretórios, versão
 database.py              → CRUD assíncrono com aiosqlite
-rag_chain.py             → Pipeline RAG com LangChain + Gemini
-vector_store.py          → Indexação e busca FAISS
+rag_chain.py             → Pipeline RAG com LangChain + OpenRouter
+vector_store.py          → Indexação e busca FAISS com embeddings locais
 document_processor.py    → Extração de texto multi-formato
 bot_profile_photo.py     → Gestão de imagens do agente
 telegram_commands.py     → Menu nativo do Telegram por perfil
@@ -56,7 +59,7 @@ tests/                   → Suite de testes automatizados
 
 - Python 3.11 a 3.13
 - `TELEGRAM_BOT_TOKEN` (obtido com [@BotFather](https://t.me/BotFather))
-- `GOOGLE_API_KEY` (obtida em [Google AI Studio](https://aistudio.google.com/app/apikey))
+- `OPENROUTER_API_KEY` (obtida em [OpenRouter](https://openrouter.ai/keys))
 
 ## Instalação
 
@@ -92,10 +95,38 @@ Edite o `.env`:
 
 ```env
 TELEGRAM_BOT_TOKEN=seu_token
-GOOGLE_API_KEY=sua_chave
-GOOGLE_GENERATION_MODEL=gemini-2.5-flash
-GOOGLE_EMBEDDING_MODEL=models/gemini-embedding-001
+OPENROUTER_API_KEY=sua_chave
+OPENROUTER_MODELS=qwen/qwen3.5-plus-02-15,deepseek/deepseek-v3.2
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
+
+## Personalização Por Empresa
+
+Antes de gerar o link e convidar clientes, cada empresa pode preparar um atendimento com identidade própria dentro do bot:
+
+- Nome da empresa exibido nas boas-vindas e no vínculo do cliente
+- Nome do assistente usado na apresentação e nas respostas
+- Saudação personalizada para a entrada do cliente
+- Imagem própria da empresa/agente
+- Capa visual automática com imagem, nome da empresa e saudação
+- Reenvio da identidade visual na primeira interação do cliente
+- Documentos exclusivos da empresa para a base RAG
+- FAQs exclusivas por empresa
+- Instruções específicas de comportamento do agente
+- Horário de atendimento próprio
+- Contato humano de fallback próprio
+- Link exclusivo para vincular clientes à empresa correta
+
+Com isso, mesmo usando um único bot compartilhado, cada cliente entra em um atendimento com contexto, conteúdo e apresentação visual da empresa certa.
+
+### Limites da personalização em um único bot
+
+O sistema separa conteúdo, saudação, imagem, FAQs, documentos e identidade visual dentro da conversa, mas alguns elementos continuam globais no Telegram:
+
+- Foto de perfil global do bot
+- Username do bot
+- Nome global do bot
+- Fundo real do chat do Telegram
 
 ## Executar
 
@@ -194,10 +225,10 @@ Clientes não usam comandos de gestão. Depois de entrarem pelo link, o menu `/`
 | Problema | Solução |
 |----------|---------|
 | `TELEGRAM_BOT_TOKEN não configurado` | Verifique se o `.env` existe e contém o token |
-| `GOOGLE_API_KEY não configurado` | Adicione a chave no `.env` |
+| `OPENROUTER_API_KEY não configurado` | Adicione a chave no `.env` |
 | Bot não responde | Verifique se o token é válido com `@BotFather` |
 | Documento não processado | Verifique se o formato é suportado e o arquivo tem texto selecionável |
-| Erro ao gerar resposta | Verifique a `GOOGLE_API_KEY` e o modelo configurado |
+| Erro ao gerar resposta | Verifique a `OPENROUTER_API_KEY`, os modelos configurados e se a base vetorial está indexada |
 | Rate limit atingido | Aguarde alguns segundos e tente novamente |
 | Menu do Telegram desatualizado | Use `/start` para sincronizar os comandos |
 
