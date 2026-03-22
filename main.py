@@ -71,9 +71,9 @@ def main():
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN não configurado no .env")
 
-    google_key = os.getenv("GOOGLE_API_KEY")
-    if not google_key:
-        raise ValueError("GOOGLE_API_KEY não configurado no .env")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        raise ValueError("OPENROUTER_API_KEY não configurado no .env")
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
     app.add_error_handler(error_handler)

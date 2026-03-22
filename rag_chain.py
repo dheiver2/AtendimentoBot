@@ -1,8 +1,18 @@
 import os
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from vector_store import buscar_contexto
+
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Modelos open-source gratuitos com fallback automático no OpenRouter
+_FALLBACK_MODELS = [
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "google/gemma-3-12b-it:free",
+    "qwen/qwen-2.5-7b-instruct:free",
+]
 
 
 TEMPLATE = """Você é "{nome_bot}", o assistente virtual de atendimento ao cliente da empresa "{nome_empresa}".
@@ -104,7 +114,7 @@ async def gerar_resposta(
     instrucoes: str,
     pergunta: str,
 ) -> str:
-    """Gera resposta usando RAG com Gemini."""
+    """Gera resposta usando RAG com OpenRouter (open-source models com fallback)."""
     instrucoes_resposta, quantidade_chunks, max_tokens = _classificar_dosagem_resposta(pergunta)
 
     # Busca contexto relevante nos documentos
@@ -119,12 +129,21 @@ async def gerar_resposta(
     contexto = "\n\n---\n\n".join(chunks)
 
     prompt = ChatPromptTemplate.from_template(TEMPLATE)
-    modelo = os.getenv("GOOGLE_GENERATION_MODEL", "gemini-2.5-flash")
 
-    llm = ChatGoogleGenerativeAI(
-        model=modelo,
+    # Usa variável de ambiente para sobrescrever modelos se necessário
+    modelos_env = os.getenv("OPENROUTER_MODELS")
+    modelos = modelos_env.split(",") if modelos_env else _FALLBACK_MODELS
+
+    llm = ChatOpenAI(
+        model=modelos[0],
+        openai_api_key=os.getenv("OPENROUTER_API_KEY"),
+        openai_api_base=_OPENROUTER_BASE_URL,
         temperature=0.3,
         max_tokens=max_tokens,
+        model_kwargs={
+            "models": modelos,
+            "route": "fallback",
+        },
     )
 
     chain = prompt | llm
