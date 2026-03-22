@@ -5,6 +5,10 @@ Bot de atendimento ao cliente no Telegram com RAG (Retrieval-Augmented Generatio
 - **admin**: configura a empresa, o agente, os documentos e gera o link de atendimento
 - **cliente**: entra pelo link enviado pelo admin e usa o bot apenas para conversar
 
+## Documentação para usuários
+
+- Guia do usuário: [docs/guia-do-usuario.md](docs/guia-do-usuario.md)
+
 ## Funcionalidades
 
 - Onboarding guiado para configuração da empresa e agente

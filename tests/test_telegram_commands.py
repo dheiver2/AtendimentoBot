@@ -18,7 +18,7 @@ class TelegramCommandsTests(unittest.IsolatedAsyncioTestCase):
     def test_comandos_do_cliente_escondem_gestao(self):
         comandos = [comando.command for comando in telegram_commands.obter_comandos_cliente()]
 
-        self.assertEqual(comandos, ["start", "ajuda"])
+        self.assertEqual(comandos, ["start", "sair", "ajuda"])
         self.assertNotIn("painel", comandos)
         self.assertNotIn("upload", comandos)
         self.assertNotIn("reset", comandos)
@@ -61,5 +61,5 @@ class TelegramCommandsTests(unittest.IsolatedAsyncioTestCase):
         comandos_terceiro = [comando.command for comando in bot.set_my_commands.await_args_list[2].args[0]]
 
         self.assertIn("painel", comandos_primeiro)
-        self.assertEqual(comandos_segundo, ["start", "ajuda"])
-        self.assertEqual(comandos_terceiro, ["start", "ajuda"])
+        self.assertEqual(comandos_segundo, ["start", "sair", "ajuda"])
+        self.assertEqual(comandos_terceiro, ["start", "sair", "ajuda"])
