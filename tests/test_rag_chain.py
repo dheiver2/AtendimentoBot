@@ -10,8 +10,8 @@ class RagChainTests(unittest.TestCase):
         )
 
         self.assertIn("curta e direta", instrucoes)
-        self.assertEqual(quantidade_chunks, 3)
-        self.assertEqual(max_tokens, 320)
+        self.assertEqual(quantidade_chunks, 1)
+        self.assertEqual(max_tokens, 180)
 
     def test_classifica_pergunta_media(self):
         instrucoes, quantidade_chunks, max_tokens = rag_chain._classificar_dosagem_resposta(
@@ -19,14 +19,14 @@ class RagChainTests(unittest.TestCase):
         )
 
         self.assertIn("tamanho médio", instrucoes)
-        self.assertEqual(quantidade_chunks, 4)
-        self.assertEqual(max_tokens, 512)
+        self.assertEqual(quantidade_chunks, 2)
+        self.assertEqual(max_tokens, 260)
 
     def test_classifica_pergunta_detalhada(self):
         instrucoes, quantidade_chunks, max_tokens = rag_chain._classificar_dosagem_resposta(
             "Explique como funciona o processo de troca e quais condições precisam ser atendidas."
         )
 
-        self.assertIn("explicação mais completa", instrucoes)
-        self.assertEqual(quantidade_chunks, 6)
-        self.assertEqual(max_tokens, 896)
+        self.assertIn("explicação objetiva", instrucoes)
+        self.assertEqual(quantidade_chunks, 3)
+        self.assertEqual(max_tokens, 420)

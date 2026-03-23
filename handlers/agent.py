@@ -211,6 +211,14 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     except VectorStoreIncompatibilityError as e:
         logger.warning("Base vetorial incompatível para a empresa %s: %s", empresa["id"], e)
         await update.message.reply_text(str(e))
+    except TimeoutError:
+        resposta = (
+            "A consulta demorou mais do que o esperado. "
+            "Tente reformular a pergunta de forma mais específica."
+        )
+        if empresa.get("fallback_contato"):
+            resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"
+        await update.message.reply_text(resposta)
     except Exception as e:
         logger.error("Erro ao gerar resposta: %s", e, exc_info=True)
         await update.message.reply_text(

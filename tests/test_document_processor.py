@@ -63,3 +63,9 @@ class DocumentProcessorTests(unittest.TestCase):
     def test_rejeita_formato_nao_suportado(self):
         with self.assertRaises(ValueError):
             document_processor.processar_documento(1, "arquivo.zip", b"conteudo")
+
+    def test_dividir_texto_em_chunks_usa_parametros_mais_enxutos(self):
+        texto = " ".join(["conteudo"] * 1200)
+        chunks = document_processor.dividir_texto_em_chunks(texto)
+
+        self.assertGreater(len(chunks), 1)

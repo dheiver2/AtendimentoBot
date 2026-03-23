@@ -1,5 +1,6 @@
 import os
 import logging
+from dataclasses import dataclass
 from time import perf_counter
 
 from langchain_openai import ChatOpenAI
@@ -9,6 +10,8 @@ from vector_store import buscar_contexto
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 18.0
+_RESPONSE_CACHE_TTL_SECONDS = 180.0
+_RESPONSE_CACHE_MAX_ITEMS = 256
 
 # Modelos open-source gratuitos com fallback automático no OpenRouter
 _FALLBACK_MODELS = [
@@ -44,6 +47,15 @@ PERGUNTA DO CLIENTE:
 {pergunta}
 
 RESPOSTA:"""
+
+
+@dataclass
+class _ResponseCacheEntry:
+    expires_at: float
+    content: str
+
+
+_response_cache: dict[tuple[int, str], _ResponseCacheEntry] = {}
 
 
 def _classificar_dosagem_resposta(pergunta: str) -> tuple[str, int, int]:
@@ -89,25 +101,54 @@ def _classificar_dosagem_resposta(pergunta: str) -> tuple[str, int, int]:
 
     if any(gatilho in pergunta_limpa for gatilho in gatilhos_detalhados) or total_palavras >= 14:
         return (
-            "Responda com explicação mais completa, cobrindo os pontos principais da pergunta. "
+            "Responda com explicação objetiva, cobrindo os pontos principais da pergunta. "
             "Se ajudar, organize em passos curtos ou tópicos curtos. Evite enrolação e repetição.",
-            6,
-            896,
+            3,
+            420,
         )
 
     if total_palavras <= 6 or any(gatilho in pergunta_limpa for gatilho in gatilhos_curtos):
         return (
             "Responda de forma curta e direta, preferencialmente em 1 frase ou até 3 linhas. "
             "Só acrescente detalhe extra se for indispensável para não gerar dúvida.",
-            3,
-            320,
+            1,
+            180,
         )
 
     return (
         "Responda em tamanho médio: um parágrafo curto ou uma lista curta se isso deixar a resposta mais clara. "
         "Seja útil sem ficar prolixo.",
-        4,
-        512,
+        2,
+        260,
+    )
+
+
+def _cache_key(empresa_id: int, pergunta: str) -> tuple[int, str]:
+    pergunta_normalizada = " ".join((pergunta or "").strip().lower().split())
+    return empresa_id, pergunta_normalizada
+
+
+def _limpar_cache_expirado(agora: float) -> None:
+    expiradas = [chave for chave, valor in _response_cache.items() if valor.expires_at <= agora]
+    for chave in expiradas:
+        _response_cache.pop(chave, None)
+
+
+def _obter_resposta_cache(empresa_id: int, pergunta: str, agora: float) -> str | None:
+    _limpar_cache_expirado(agora)
+    entry = _response_cache.get(_cache_key(empresa_id, pergunta))
+    if entry and entry.expires_at > agora:
+        return entry.content
+    return None
+
+
+def _salvar_resposta_cache(empresa_id: int, pergunta: str, resposta: str, agora: float) -> None:
+    if len(_response_cache) >= _RESPONSE_CACHE_MAX_ITEMS:
+        chave_mais_antiga = min(_response_cache, key=lambda chave: _response_cache[chave].expires_at)
+        _response_cache.pop(chave_mais_antiga, None)
+    _response_cache[_cache_key(empresa_id, pergunta)] = _ResponseCacheEntry(
+        expires_at=agora + _RESPONSE_CACHE_TTL_SECONDS,
+        content=resposta,
     )
 
 
@@ -120,6 +161,11 @@ async def gerar_resposta(
 ) -> str:
     """Gera resposta usando RAG com OpenRouter (open-source models com fallback)."""
     inicio = perf_counter()
+    resposta_cache = _obter_resposta_cache(empresa_id, pergunta, inicio)
+    if resposta_cache is not None:
+        logger.info("Tempo RAG empresa=%s cache_hit=true total=0.00s", empresa_id)
+        return resposta_cache
+
     instrucoes_resposta, quantidade_chunks, max_tokens = _classificar_dosagem_resposta(pergunta)
 
     # Busca contexto relevante nos documentos
@@ -174,15 +220,30 @@ async def gerar_resposta(
     chain = prompt | llm
 
     inicio_llm = perf_counter()
-    resposta = await chain.ainvoke({
-        "nome_bot": nome_bot,
-        "nome_empresa": nome_empresa,
-        "instrucoes": instrucoes,
-        "contexto": contexto,
-        "instrucoes_resposta": instrucoes_resposta,
-        "pergunta": pergunta,
-    })
+    try:
+        resposta = await chain.ainvoke({
+            "nome_bot": nome_bot,
+            "nome_empresa": nome_empresa,
+            "instrucoes": instrucoes,
+            "contexto": contexto,
+            "instrucoes_resposta": instrucoes_resposta,
+            "pergunta": pergunta,
+        })
+    except Exception:
+        logger.warning(
+            "Tempo RAG empresa=%s chunks=%s busca=%.2fs llm_timeout_ou_erro=true total=%.2fs modelo=%s fallback=%s timeout=%.1fs",
+            empresa_id,
+            len(chunks),
+            tempo_busca,
+            perf_counter() - inicio,
+            modelos[0],
+            usar_fallback,
+            timeout,
+            exc_info=True,
+        )
+        raise
     tempo_llm = perf_counter() - inicio_llm
+    _salvar_resposta_cache(empresa_id, pergunta, resposta.content, perf_counter())
 
     logger.info(
         "Tempo RAG empresa=%s chunks=%s busca=%.2fs llm=%.2fs total=%.2fs modelo=%s fallback=%s timeout=%.1fs",

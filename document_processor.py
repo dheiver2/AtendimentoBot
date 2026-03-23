@@ -9,6 +9,9 @@ from pypdf import PdfReader
 from config import PDFS_DIR
 from validators import sanitizar_nome_arquivo, validar_tamanho_documento
 
+_DEFAULT_CHUNK_SIZE = 700
+_DEFAULT_CHUNK_OVERLAP = 80
+
 SUPPORTED_EXTENSIONS = {
     ".pdf": "PDF",
     ".docx": "Word",
@@ -102,7 +105,11 @@ def extrair_texto_documento(caminho_arquivo: str, extensao: str) -> str:
     )
 
 
-def dividir_texto_em_chunks(texto: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> list[str]:
+def dividir_texto_em_chunks(
+    texto: str,
+    chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = _DEFAULT_CHUNK_OVERLAP,
+) -> list[str]:
     """Divide o texto em pedaços menores para indexação."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
