@@ -8,6 +8,7 @@ from vector_store import buscar_contexto
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 logger = logging.getLogger(__name__)
+_DEFAULT_TIMEOUT_SECONDS = 18.0
 
 # Modelos open-source gratuitos com fallback automático no OpenRouter
 _FALLBACK_MODELS = [
@@ -122,7 +123,9 @@ async def gerar_resposta(
     instrucoes_resposta, quantidade_chunks, max_tokens = _classificar_dosagem_resposta(pergunta)
 
     # Busca contexto relevante nos documentos
+    inicio_busca = perf_counter()
     chunks = buscar_contexto(empresa_id, pergunta, k=quantidade_chunks)
+    tempo_busca = perf_counter() - inicio_busca
 
     if not chunks:
         return (
@@ -142,8 +145,16 @@ async def gerar_resposta(
         else _FALLBACK_MODELS
     )
 
+    usar_fallback = os.getenv("OPENROUTER_ENABLE_FALLBACK", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    timeout = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)))
+
     extra_body = {}
-    if len(modelos) > 1:
+    if usar_fallback and len(modelos) > 1:
         extra_body = {
             "models": modelos,
             "route": "fallback",
@@ -151,15 +162,18 @@ async def gerar_resposta(
 
     llm = ChatOpenAI(
         model=modelos[0],
-        openai_api_key=os.getenv("OPENROUTER_API_KEY"),
-        openai_api_base=_OPENROUTER_BASE_URL,
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url=_OPENROUTER_BASE_URL,
         temperature=0.3,
         max_tokens=max_tokens,
+        timeout=timeout,
+        max_retries=0,
         extra_body=extra_body,
     )
 
     chain = prompt | llm
 
+    inicio_llm = perf_counter()
     resposta = await chain.ainvoke({
         "nome_bot": nome_bot,
         "nome_empresa": nome_empresa,
@@ -168,12 +182,18 @@ async def gerar_resposta(
         "instrucoes_resposta": instrucoes_resposta,
         "pergunta": pergunta,
     })
+    tempo_llm = perf_counter() - inicio_llm
 
     logger.info(
-        "Tempo RAG empresa=%s chunks=%s total=%.2fs",
+        "Tempo RAG empresa=%s chunks=%s busca=%.2fs llm=%.2fs total=%.2fs modelo=%s fallback=%s timeout=%.1fs",
         empresa_id,
         len(chunks),
+        tempo_busca,
+        tempo_llm,
         perf_counter() - inicio,
+        modelos[0],
+        usar_fallback,
+        timeout,
     )
 
     return resposta.content
