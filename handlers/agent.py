@@ -1,6 +1,8 @@
 """Handler de interação com o agente — mensagens de texto dos clientes e admin."""
+import asyncio
 import logging
 import unicodedata
+from dataclasses import dataclass
 from time import perf_counter
 
 from difflib import SequenceMatcher
@@ -10,16 +12,46 @@ from telegram.ext import ContextTypes
 from database import (
     listar_faqs,
     obter_empresa_do_usuario,
-    obter_empresa_por_admin,
     registrar_conversa,
 )
 from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
 from validators import InputValidationError, validar_mensagem_usuario
 from vector_store import VectorStoreIncompatibilityError, empresa_tem_documentos
-from .common import _enviar_identidade_visual_empresa
-
 logger = logging.getLogger(__name__)
+_FAQ_CACHE_TTL_SECONDS = 30
+
+
+@dataclass
+class _FaqCacheEntry:
+    expires_at: float
+    items: list[dict]
+
+
+_faq_cache: dict[int, _FaqCacheEntry] = {}
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Registra falhas de tarefas em background sem interromper a resposta ao usuário."""
+    try:
+        task.result()
+    except Exception as exc:
+        logger.warning("Falha em tarefa assíncrona de pós-resposta: %s", exc, exc_info=True)
+
+
+async def _obter_faqs_cacheadas(empresa_id: int) -> list[dict]:
+    """Reduz leituras repetidas de FAQ em mensagens consecutivas."""
+    agora = perf_counter()
+    cache = _faq_cache.get(empresa_id)
+    if cache and cache.expires_at > agora:
+        return cache.items
+
+    items = await listar_faqs(empresa_id)
+    _faq_cache[empresa_id] = _FaqCacheEntry(
+        expires_at=agora + _FAQ_CACHE_TTL_SECONDS,
+        items=items,
+    )
+    return items
 
 
 def _normalizar_texto(texto: str) -> str:
@@ -125,7 +157,10 @@ def _instrucoes_operacionais_empresa(empresa: dict) -> str:
 async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, resposta: str):
     """Responde ao usuário e registra a conversa no histórico."""
     await update.message.reply_text(resposta)
-    await registrar_conversa(empresa["id"], update.effective_user.id, pergunta, resposta)
+    task = asyncio.create_task(
+        registrar_conversa(empresa["id"], update.effective_user.id, pergunta, resposta)
+    )
+    task.add_done_callback(_log_task_exception)
 
 
 async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,20 +189,9 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    usuario_admin = bool(await obter_empresa_por_admin(user_id))
-    if not usuario_admin:
-        await _enviar_identidade_visual_empresa(
-            update.message,
-            empresa,
-            context=context,
-            caption=(
-                f"🏢 {empresa['nome']}\n\n"
-                f"{empresa['saudacao']}\n\n"
-                "Você está no atendimento certo. A seguir, continuo sua conversa normalmente."
-            ),
-        )
+    usuario_admin = empresa.get("telegram_user_id") == user_id
 
-    faqs = await listar_faqs(empresa["id"])
+    faqs = await _obter_faqs_cacheadas(empresa["id"])
 
     if not bool(empresa.get("ativo", 1)):
         await update.message.chat.send_action("typing")
