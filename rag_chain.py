@@ -132,7 +132,18 @@ async def gerar_resposta(
 
     # Usa variável de ambiente para sobrescrever modelos se necessário
     modelos_env = os.getenv("OPENROUTER_MODELS")
-    modelos = modelos_env.split(",") if modelos_env else _FALLBACK_MODELS
+    modelos = (
+        [modelo.strip() for modelo in modelos_env.split(",") if modelo.strip()]
+        if modelos_env
+        else _FALLBACK_MODELS
+    )
+
+    extra_body = {}
+    if len(modelos) > 1:
+        extra_body = {
+            "models": modelos,
+            "route": "fallback",
+        }
 
     llm = ChatOpenAI(
         model=modelos[0],
@@ -140,10 +151,7 @@ async def gerar_resposta(
         openai_api_base=_OPENROUTER_BASE_URL,
         temperature=0.3,
         max_tokens=max_tokens,
-        model_kwargs={
-            "models": modelos,
-            "route": "fallback",
-        },
+        extra_body=extra_body,
     )
 
     chain = prompt | llm
