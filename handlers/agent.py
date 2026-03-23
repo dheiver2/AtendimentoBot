@@ -1,11 +1,9 @@
 """Handler de interação com o agente — mensagens de texto dos clientes e admin."""
 import asyncio
 import logging
-import unicodedata
 from dataclasses import dataclass
 from time import perf_counter
 
-from difflib import SequenceMatcher
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -16,6 +14,13 @@ from database import (
 )
 from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
+from response_intelligence import (
+    buscar_resposta_faq as _buscar_resposta_faq_inteligencia,
+    decidir_resposta,
+    detectar_pergunta_horario as _detectar_pergunta_horario_inteligencia,
+    detectar_pedido_humano as _detectar_pedido_humano_inteligencia,
+    normalizar_texto as _normalizar_texto_inteligencia,
+)
 from validators import InputValidationError, validar_mensagem_usuario
 from vector_store import VectorStoreIncompatibilityError, empresa_tem_documentos
 logger = logging.getLogger(__name__)
@@ -29,32 +34,6 @@ class _FaqCacheEntry:
 
 
 _faq_cache: dict[int, _FaqCacheEntry] = {}
-_MENSAGENS_TRIVIAIS = {
-    "oi",
-    "ola",
-    "olá",
-    "opa",
-    "e ai",
-    "ei",
-    "hey",
-    "bom dia",
-    "boa tarde",
-    "boa noite",
-    "obrigado",
-    "obrigada",
-    "valeu",
-    "vlw",
-    "ok",
-    "oks",
-    "okay",
-    "blz",
-    "beleza",
-    "certo",
-    "perfeito",
-    "entendi",
-    "show",
-    "top",
-}
 
 
 def _log_task_exception(task: asyncio.Task) -> None:
@@ -80,144 +59,20 @@ async def _obter_faqs_cacheadas(empresa_id: int) -> list[dict]:
     return items
 
 
-def _normalizar_texto(texto: str) -> str:
-    """Normaliza texto para comparações simples no fluxo de FAQ e fallback."""
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join(char for char in texto if not unicodedata.combining(char))
-    return " ".join(texto.lower().strip().split())
-
-
 def _buscar_resposta_faq(pergunta: str, faqs: list[dict]) -> str | None:
-    """Busca a resposta mais provável entre FAQs cadastradas."""
-    pergunta_normalizada = _normalizar_texto(pergunta)
-    melhor_resposta = None
-    melhor_score = 0.0
-
-    for faq in faqs:
-        pergunta_faq = _normalizar_texto(faq["pergunta"])
-        if not pergunta_faq:
-            continue
-
-        if (
-            pergunta_normalizada == pergunta_faq
-            or pergunta_normalizada in pergunta_faq
-            or pergunta_faq in pergunta_normalizada
-        ):
-            return faq["resposta"]
-
-        score = SequenceMatcher(None, pergunta_normalizada, pergunta_faq).ratio()
-        if score > melhor_score:
-            melhor_score = score
-            melhor_resposta = faq["resposta"]
-
-    if melhor_score >= 0.82:
-        return melhor_resposta
-
-    return None
+    return _buscar_resposta_faq_inteligencia(pergunta, faqs)
 
 
-def _detectar_mensagem_trivial(pergunta: str) -> bool:
-    """Identifica mensagens sociais/curtas que não precisam de RAG."""
-    pergunta_normalizada = _normalizar_texto(pergunta)
-    if pergunta_normalizada in _MENSAGENS_TRIVIAIS:
-        return True
-
-    palavras = pergunta_normalizada.split()
-    if len(palavras) <= 2 and all(palavra in _MENSAGENS_TRIVIAIS for palavra in palavras):
-        return True
-
-    return False
-
-
-def _resposta_trivial(empresa: dict, pergunta: str) -> str:
-    """Responde a mensagens sociais sem acionar busca vetorial."""
-    pergunta_normalizada = _normalizar_texto(pergunta)
-
-    if any(token in pergunta_normalizada for token in ("obrigado", "obrigada", "valeu", "vlw")):
-        return "Por nada. Se quiser, pode me mandar sua próxima dúvida."
-
-    if any(token in pergunta_normalizada for token in ("ok", "okay", "certo", "perfeito", "entendi", "beleza", "blz", "show", "top")):
-        return "Certo. Quando quiser, envie sua dúvida."
-
-    saudacao = empresa.get("saudacao") or "Olá. Como posso ajudar?"
-    return saudacao
+def _normalizar_texto(texto: str) -> str:
+    return _normalizar_texto_inteligencia(texto)
 
 
 def _detectar_pedido_humano(pergunta: str) -> bool:
-    """Detecta pedidos explícitos de encaminhamento para humano/contato."""
-    pergunta_normalizada = _normalizar_texto(pergunta)
-    gatilhos = [
-        "falar com atendente",
-        "falar com humano",
-        "atendimento humano",
-        "quero um atendente",
-        "quero falar com alguem",
-        "telefone",
-        "whatsapp",
-        "contato",
-    ]
-    return any(gatilho in pergunta_normalizada for gatilho in gatilhos)
+    return _detectar_pedido_humano_inteligencia(pergunta)
 
 
 def _detectar_pergunta_horario(pergunta: str) -> bool:
-    """Detecta perguntas sobre horário de atendimento."""
-    pergunta_normalizada = _normalizar_texto(pergunta)
-    gatilhos = ["horario", "atendimento", "aberto", "funciona", "expediente"]
-    return any(gatilho in pergunta_normalizada for gatilho in gatilhos)
-
-
-def _deve_usar_rag(pergunta: str) -> bool:
-    """Decide se vale consultar a base vetorial para a pergunta."""
-    pergunta_normalizada = _normalizar_texto(pergunta)
-    if _detectar_mensagem_trivial(pergunta_normalizada):
-        return False
-
-    palavras = pergunta_normalizada.split()
-    if len(palavras) <= 2 and not any(char.isdigit() for char in pergunta_normalizada):
-        return False
-
-    gatilhos_rag = [
-        "preco",
-        "preços",
-        "preço",
-        "valor",
-        "custa",
-        "prazo",
-        "entrega",
-        "troca",
-        "devolucao",
-        "devolução",
-        "garantia",
-        "contrato",
-        "plano",
-        "servico",
-        "serviço",
-        "produto",
-        "produtos",
-        "pagamento",
-        "pix",
-        "cartao",
-        "cartão",
-        "boleto",
-        "documento",
-        "documentos",
-        "politica",
-        "política",
-        "regra",
-        "regras",
-        "como",
-        "quais",
-        "qual",
-        "funciona",
-        "passo",
-        "processo",
-        "diferenca",
-        "diferença",
-        "compar",
-        "cancel",
-        "suporte",
-    ]
-    return any(gatilho in pergunta_normalizada for gatilho in gatilhos_rag) or len(palavras) >= 5
+    return _detectar_pergunta_horario_inteligencia(pergunta)
 
 
 def _formatar_resposta_pausado(empresa: dict) -> str:
@@ -299,62 +154,27 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     usuario_admin = empresa.get("telegram_user_id") == user_id
 
     faqs = await _obter_faqs_cacheadas(empresa["id"])
+    tem_documentos = empresa_tem_documentos(empresa["id"])
+    decisao = decidir_resposta(
+        pergunta=pergunta,
+        empresa=empresa,
+        faqs=faqs,
+        usuario_admin=usuario_admin,
+        tem_documentos=tem_documentos,
+        resposta_pausado=_formatar_resposta_pausado(empresa),
+        resposta_sem_base=_formatar_resposta_sem_base(empresa, usuario_admin=usuario_admin),
+    )
+    logger.info(
+        "Inteligencia resposta empresa=%s usuario=%s decisao=%s motivo=%s",
+        empresa["id"],
+        user_id,
+        decisao.kind,
+        decisao.reason,
+    )
 
-    if not bool(empresa.get("ativo", 1)):
+    if decisao.kind != "rag":
         await update.message.chat.send_action("typing")
-        await _responder_e_registrar(update, empresa, pergunta, _formatar_resposta_pausado(empresa))
-        return
-
-    if empresa.get("fallback_contato") and _detectar_pedido_humano(pergunta):
-        await update.message.chat.send_action("typing")
-        await _responder_e_registrar(
-            update,
-            empresa,
-            pergunta,
-            f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}",
-        )
-        return
-
-    if empresa.get("horario_atendimento") and _detectar_pergunta_horario(pergunta):
-        await update.message.chat.send_action("typing")
-        await _responder_e_registrar(
-            update,
-            empresa,
-            pergunta,
-            f"🕒 Horário de atendimento: {empresa['horario_atendimento']}",
-        )
-        return
-
-    resposta_faq = _buscar_resposta_faq(pergunta, faqs)
-    if resposta_faq:
-        await update.message.chat.send_action("typing")
-        await _responder_e_registrar(update, empresa, pergunta, resposta_faq)
-        return
-
-    if _detectar_mensagem_trivial(pergunta):
-        await update.message.chat.send_action("typing")
-        await _responder_e_registrar(update, empresa, pergunta, _resposta_trivial(empresa, pergunta))
-        return
-
-    if not _deve_usar_rag(pergunta):
-        await update.message.chat.send_action("typing")
-        resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
-        if empresa.get("fallback_contato"):
-            resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"
-        await _responder_e_registrar(update, empresa, pergunta, resposta)
-        return
-
-    if not empresa_tem_documentos(empresa["id"]):
-        await update.message.chat.send_action("typing")
-        await _responder_e_registrar(
-            update,
-            empresa,
-            pergunta,
-            _formatar_resposta_sem_base(
-                empresa,
-                usuario_admin=usuario_admin,
-            ),
-        )
+        await _responder_e_registrar(update, empresa, pergunta, decisao.answer or "")
         return
 
     # Envia indicador de "digitando"
