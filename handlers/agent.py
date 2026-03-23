@@ -1,6 +1,7 @@
 """Handler de interação com o agente — mensagens de texto dos clientes e admin."""
 import logging
 import unicodedata
+from time import perf_counter
 
 from difflib import SequenceMatcher
 from telegram import Update
@@ -129,6 +130,7 @@ async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, r
 
 async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens do próprio usuário e responde com RAG."""
+    inicio = perf_counter()
     user_id = update.effective_user.id
 
     # Rate limiting
@@ -235,6 +237,12 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
             )
 
         await _responder_e_registrar(update, empresa, pergunta, resposta)
+        logger.info(
+            "Tempo atendimento empresa=%s usuario=%s total=%.2fs",
+            empresa["id"],
+            user_id,
+            perf_counter() - inicio,
+        )
 
     except VectorStoreIncompatibilityError as e:
         logger.warning("Base vetorial incompatível para a empresa %s: %s", empresa["id"], e)

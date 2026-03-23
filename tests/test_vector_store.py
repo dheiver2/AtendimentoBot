@@ -80,6 +80,10 @@ class SubstituirDocumentosTests(unittest.TestCase):
 
 
 class BuscarContextoTests(unittest.TestCase):
+    def setUp(self):
+        vs._carregar_store_cache.cache_clear()
+        vs._get_embeddings.cache_clear()
+
     @patch("vector_store.os.path.exists", return_value=False)
     def test_sem_store_retorna_lista_vazia(self, mock_exists):
         resultado = vs.buscar_contexto(999, "pergunta")
@@ -108,11 +112,10 @@ class BuscarContextoTests(unittest.TestCase):
     @patch("vector_store.FAISS")
     def test_mismatch_de_dimensao_gera_erro_claro(self, mock_faiss, mock_exists, mock_emb):
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1, 0.2, 0.3]
         mock_emb.return_value = mock_embeddings
 
         mock_store = MagicMock()
-        mock_store.index.d = 2
+        mock_store.similarity_search.side_effect = AssertionError("dimensao invalida")
         mock_faiss.load_local.return_value = mock_store
 
         with self.assertRaises(vs.VectorStoreIncompatibilityError) as ctx:

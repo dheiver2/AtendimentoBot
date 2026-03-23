@@ -1,10 +1,13 @@
 import os
+import logging
+from time import perf_counter
 
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from vector_store import buscar_contexto
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+logger = logging.getLogger(__name__)
 
 # Modelos open-source gratuitos com fallback automático no OpenRouter
 _FALLBACK_MODELS = [
@@ -115,6 +118,7 @@ async def gerar_resposta(
     pergunta: str,
 ) -> str:
     """Gera resposta usando RAG com OpenRouter (open-source models com fallback)."""
+    inicio = perf_counter()
     instrucoes_resposta, quantidade_chunks, max_tokens = _classificar_dosagem_resposta(pergunta)
 
     # Busca contexto relevante nos documentos
@@ -164,5 +168,12 @@ async def gerar_resposta(
         "instrucoes_resposta": instrucoes_resposta,
         "pergunta": pergunta,
     })
+
+    logger.info(
+        "Tempo RAG empresa=%s chunks=%s total=%.2fs",
+        empresa_id,
+        len(chunks),
+        perf_counter() - inicio,
+    )
 
     return resposta.content
