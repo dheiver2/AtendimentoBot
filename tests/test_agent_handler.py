@@ -152,6 +152,22 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         mock_rag.assert_not_called()
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="como vai")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock)
+    async def test_smalltalk_como_vai_nao_usa_rag(self, mock_rag, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("como vai")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("pronto para ajudar", resposta)
+        mock_rag.assert_not_called()
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="me ajuda")
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.listar_faqs", return_value=[])
@@ -168,6 +184,24 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pergunta mais específica", resposta)
         self.assertIn("suporte@x.com", resposta)
         mock_rag.assert_not_called()
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="o que e a clinica")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.listar_faqs", return_value=[])
+    @patch("handlers.agent.empresa_tem_documentos", return_value=True)
+    @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock, return_value="A clínica é especializada em odontologia estética.")
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_pergunta_institucional_usa_rag(self, mock_reg, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("o que e a clinica")
+        ctx = make_context()
+        await interagir_com_agente(update, ctx)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("especializada", resposta)
+        mock_rag.assert_called_once()
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="qual o preço?")

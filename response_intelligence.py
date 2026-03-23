@@ -40,6 +40,12 @@ _MENSAGENS_TRIVIAIS = {
     "entendi",
     "show",
     "top",
+    "como vai",
+    "tudo bem",
+    "td bem",
+    "como vc esta",
+    "como voce esta",
+    "como c vai",
 }
 
 
@@ -112,6 +118,12 @@ def resposta_trivial(empresa: dict, pergunta: str) -> str:
     ):
         return "Certo. Quando quiser, envie sua dúvida."
 
+    if any(
+        token in pergunta_normalizada
+        for token in ("como vai", "tudo bem", "td bem", "como vc esta", "como voce esta", "como c vai")
+    ):
+        return "Estou bem e pronto para ajudar. Qual é a sua dúvida?"
+
     return empresa.get("saudacao") or "Olá. Como posso ajudar?"
 
 
@@ -149,6 +161,19 @@ def deve_usar_rag(pergunta: str) -> bool:
         return False
 
     gatilhos_rag = [
+        "o que e",
+        "oque e",
+        "quem e",
+        "quem somos",
+        "sobre a clinica",
+        "sobre a empresa",
+        "sobre voces",
+        "sobre nos",
+        "clinica",
+        "clínica",
+        "empresa",
+        "servicos",
+        "serviços",
         "preco",
         "preços",
         "preço",
@@ -183,6 +208,9 @@ def deve_usar_rag(pergunta: str) -> bool:
         "funciona",
         "passo",
         "processo",
+        "o que",
+        "quem",
+        "onde",
         "diferenca",
         "diferença",
         "compar",
