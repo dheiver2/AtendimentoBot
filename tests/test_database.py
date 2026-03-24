@@ -169,3 +169,27 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(removidas, 1)
         self.assertEqual(await database.listar_faqs(empresa_id), [])
+
+    async def test_persiste_e_lista_metricas_recentes(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+
+        await database.registrar_metrica_atendimento_db(
+            empresa_id=empresa_id,
+            decisao="faq",
+            total_segundos=0.42,
+            usou_rag=False,
+            sucesso=True,
+        )
+        await database.registrar_metrica_rag_db(
+            empresa_id=empresa_id,
+            total_segundos=1.75,
+            cache_hit=True,
+            sucesso=True,
+        )
+
+        metricas = await database.listar_metricas_empresa(empresa_id)
+
+        self.assertEqual(len(metricas), 2)
+        self.assertEqual(metricas[0]["tipo"], "rag")
+        self.assertEqual(metricas[1]["tipo"], "atendimento")
+        self.assertEqual(metricas[1]["decisao"], "faq")

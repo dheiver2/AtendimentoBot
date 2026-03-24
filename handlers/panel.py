@@ -14,6 +14,7 @@ from database import (
     obter_empresa_por_admin,
 )
 from document_processor import listar_formatos_suportados
+from metrics import obter_resumo_metricas_empresa
 from vector_store import empresa_tem_documentos
 
 from .common import (
@@ -23,6 +24,39 @@ from .common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _formatar_bloco_metricas(empresa_id: int) -> str:
+    """Resume métricas recentes do atendimento para o admin."""
+    resumo = await obter_resumo_metricas_empresa(empresa_id)
+    if not resumo:
+        return "📈 Métricas recentes: ainda sem dados nesta execução."
+
+    atendimento = resumo["atendimentos"]
+    rag = resumo["rag"]
+    decisoes = atendimento["decisoes"]
+    top_decisoes = sorted(decisoes.items(), key=lambda item: (-item[1], item[0]))[:3]
+    decisoes_texto = ", ".join(f"{nome}={total}" for nome, total in top_decisoes) or "sem dados"
+
+    linhas = [
+        f"📈 Métricas recentes ({resumo['janela_horas']}h, máx. 200 eventos)",
+        (
+            f"Atendimentos: {atendimento['total']} | "
+            f"média {atendimento['media_segundos']:.2f}s | "
+            f"p95 {atendimento['p95_segundos']:.2f}s | "
+            f"sucesso {atendimento['taxa_sucesso'] * 100:.0f}% | "
+            f"RAG {atendimento['taxa_rag'] * 100:.0f}%"
+        ),
+        (
+            f"RAG: {rag['total']} | "
+            f"média {rag['media_segundos']:.2f}s | "
+            f"p95 {rag['p95_segundos']:.2f}s | "
+            f"cache hit {rag['taxa_cache_hit'] * 100:.0f}% | "
+            f"sucesso {rag['taxa_sucesso'] * 100:.0f}%"
+        ),
+        f"Top decisões: {decisoes_texto}",
+    ]
+    return "\n".join(linhas)
 
 
 async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,6 +234,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Clientes vinculados: {total_clientes}\n"
             f"FAQs: {len(faqs)}\n"
             f"Documentos indexados: {len(docs)}\n\n"
+            f"{await _formatar_bloco_metricas(empresa['id'])}\n\n"
             f"Seu agente já pode ser testado neste chat e compartilhado com /link."
         )
     else:
@@ -213,6 +248,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Clientes vinculados: {total_clientes}\n"
             f"FAQs: {len(faqs)}\n"
             f"Nenhum documento carregado.\n\n"
+            f"{await _formatar_bloco_metricas(empresa['id'])}\n\n"
             f"Envie documentos neste chat ou use /upload para concluir a configuração."
         )
     await mensagem.reply_text(texto)

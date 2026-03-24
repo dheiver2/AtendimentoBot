@@ -5,6 +5,7 @@ from time import perf_counter
 
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
+from metrics import registrar_metrica_rag
 from vector_store import buscar_contexto
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -163,6 +164,7 @@ async def gerar_resposta(
     inicio = perf_counter()
     resposta_cache = _obter_resposta_cache(empresa_id, pergunta, inicio)
     if resposta_cache is not None:
+        registrar_metrica_rag(empresa_id, 0.0, cache_hit=True, sucesso=True)
         logger.info("Tempo RAG empresa=%s cache_hit=true total=0.00s", empresa_id)
         return resposta_cache
 
@@ -230,6 +232,12 @@ async def gerar_resposta(
             "pergunta": pergunta,
         })
     except Exception:
+        registrar_metrica_rag(
+            empresa_id,
+            perf_counter() - inicio,
+            cache_hit=False,
+            sucesso=False,
+        )
         logger.warning(
             "Tempo RAG empresa=%s chunks=%s busca=%.2fs llm_timeout_ou_erro=true total=%.2fs modelo=%s fallback=%s timeout=%.1fs",
             empresa_id,
@@ -244,6 +252,12 @@ async def gerar_resposta(
         raise
     tempo_llm = perf_counter() - inicio_llm
     _salvar_resposta_cache(empresa_id, pergunta, resposta.content, perf_counter())
+    registrar_metrica_rag(
+        empresa_id,
+        perf_counter() - inicio,
+        cache_hit=False,
+        sucesso=True,
+    )
 
     logger.info(
         "Tempo RAG empresa=%s chunks=%s busca=%.2fs llm=%.2fs total=%.2fs modelo=%s fallback=%s timeout=%.1fs",

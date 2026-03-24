@@ -12,6 +12,7 @@ from database import (
     obter_empresa_do_usuario,
     registrar_conversa,
 )
+from metrics import registrar_metrica_atendimento
 from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
 from response_intelligence import (
@@ -189,6 +190,13 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     if decisao.kind != "rag":
         await update.message.chat.send_action("typing")
         await _responder_e_registrar(update, empresa, pergunta, decisao.answer or "")
+        registrar_metrica_atendimento(
+            empresa_id=empresa["id"],
+            decisao=decisao.kind,
+            total_segundos=perf_counter() - inicio,
+            usou_rag=False,
+            sucesso=True,
+        )
         return
 
     # Envia indicador de "digitando"
@@ -215,6 +223,13 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
             )
 
         await _responder_e_registrar(update, empresa, pergunta, resposta)
+        registrar_metrica_atendimento(
+            empresa_id=empresa["id"],
+            decisao=decisao.kind,
+            total_segundos=perf_counter() - inicio,
+            usou_rag=True,
+            sucesso=True,
+        )
         logger.info(
             "Tempo atendimento empresa=%s usuario=%s total=%.2fs",
             empresa["id"],
@@ -225,6 +240,13 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     except VectorStoreIncompatibilityError as e:
         logger.warning("Base vetorial incompatível para a empresa %s: %s", empresa["id"], e)
         await update.message.reply_text(str(e))
+        registrar_metrica_atendimento(
+            empresa_id=empresa["id"],
+            decisao="rag_incompatibility",
+            total_segundos=perf_counter() - inicio,
+            usou_rag=True,
+            sucesso=False,
+        )
     except TimeoutError:
         resposta = (
             "A consulta demorou mais do que o esperado. "
@@ -233,8 +255,22 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         if empresa.get("fallback_contato"):
             resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"
         await update.message.reply_text(resposta)
+        registrar_metrica_atendimento(
+            empresa_id=empresa["id"],
+            decisao="rag_timeout",
+            total_segundos=perf_counter() - inicio,
+            usou_rag=True,
+            sucesso=False,
+        )
     except Exception as e:
         logger.error("Erro ao gerar resposta: %s", e, exc_info=True)
         await update.message.reply_text(
             "Desculpe, ocorreu um erro ao processar sua pergunta. Tente novamente em alguns instantes."
+        )
+        registrar_metrica_atendimento(
+            empresa_id=empresa["id"],
+            decisao="rag_error",
+            total_segundos=perf_counter() - inicio,
+            usou_rag=True,
+            sucesso=False,
         )

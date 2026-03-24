@@ -126,15 +126,36 @@ class CmdStatusTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.panel.listar_faqs", new_callable=AsyncMock, return_value=[])
     @patch("handlers.panel.contar_clientes_empresa", new_callable=AsyncMock, return_value=2)
     @patch("handlers.panel.empresa_tem_imagem", return_value=True)
+    @patch("handlers.panel.obter_resumo_metricas_empresa", new_callable=AsyncMock)
     @patch("handlers.panel._enviar_preview_imagem_empresa", new_callable=AsyncMock)
-    async def test_status_configurado(self, mock_preview, mock_img, mock_clientes, mock_faqs, mock_docs, mock_tem, mock_admin):
+    async def test_status_configurado(self, mock_preview, mock_metricas, mock_img, mock_clientes, mock_faqs, mock_docs, mock_tem, mock_admin):
         from handlers.panel import cmd_status
         mock_admin.return_value = make_empresa(nome="Acme")
+        mock_metricas.return_value = {
+            "janela_horas": 24,
+            "atendimentos": {
+                "total": 10,
+                "media_segundos": 1.25,
+                "p95_segundos": 2.4,
+                "taxa_rag": 0.4,
+                "taxa_sucesso": 0.9,
+                "decisoes": {"faq": 4, "rag": 3, "trivial": 2},
+            },
+            "rag": {
+                "total": 4,
+                "media_segundos": 1.8,
+                "p95_segundos": 3.1,
+                "taxa_cache_hit": 0.25,
+                "taxa_sucesso": 0.75,
+            },
+        }
         update = make_update()
         ctx = make_context()
         await cmd_status(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("CONFIGURADO", texto)
+        self.assertIn("Métricas recentes", texto)
+        self.assertIn("Top decisões", texto)
         mock_preview.assert_called_once()
 
     @patch("handlers.panel._obter_empresa_admin_ou_responder")
@@ -143,7 +164,8 @@ class CmdStatusTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.panel.listar_faqs", new_callable=AsyncMock, return_value=[])
     @patch("handlers.panel.contar_clientes_empresa", new_callable=AsyncMock, return_value=0)
     @patch("handlers.panel.empresa_tem_imagem", return_value=False)
-    async def test_status_incompleto(self, mock_img, mock_clientes, mock_faqs, mock_docs, mock_tem, mock_admin):
+    @patch("handlers.panel.obter_resumo_metricas_empresa", new_callable=AsyncMock, return_value=None)
+    async def test_status_incompleto(self, mock_metricas, mock_img, mock_clientes, mock_faqs, mock_docs, mock_tem, mock_admin):
         from handlers.panel import cmd_status
         mock_admin.return_value = make_empresa()
         update = make_update()
@@ -151,6 +173,7 @@ class CmdStatusTests(unittest.IsolatedAsyncioTestCase):
         await cmd_status(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("INCOMPLETO", texto)
+        self.assertIn("ainda sem dados", texto)
 
 
 class PainelCallbacksTests(unittest.IsolatedAsyncioTestCase):

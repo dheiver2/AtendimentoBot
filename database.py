@@ -215,6 +215,24 @@ async def init_db():
                 FOREIGN KEY (empresa_id) REFERENCES empresas(id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS metricas_atendimento (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                empresa_id INTEGER NOT NULL,
+                tipo TEXT NOT NULL,
+                decisao TEXT DEFAULT '',
+                total_segundos REAL NOT NULL,
+                usou_rag INTEGER DEFAULT 0,
+                cache_hit INTEGER DEFAULT 0,
+                sucesso INTEGER NOT NULL DEFAULT 1,
+                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_metricas_atendimento_empresa_criado
+            ON metricas_atendimento(empresa_id, criado_em)
+        """)
         await db.commit()
 
 
@@ -480,6 +498,63 @@ async def registrar_conversa(empresa_id: int, usuario_telegram_id: int, mensagem
         await db.commit()
 
 
+async def registrar_metrica_atendimento_db(
+    empresa_id: int,
+    decisao: str,
+    total_segundos: float,
+    usou_rag: bool,
+    sucesso: bool,
+):
+    """Persiste uma métrica de atendimento concluído."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO metricas_atendimento (
+                empresa_id, tipo, decisao, total_segundos, usou_rag, sucesso
+            ) VALUES (?, 'atendimento', ?, ?, ?, ?)
+            """,
+            (empresa_id, decisao, total_segundos, int(usou_rag), int(sucesso)),
+        )
+        await db.commit()
+
+
+async def registrar_metrica_rag_db(
+    empresa_id: int,
+    total_segundos: float,
+    cache_hit: bool,
+    sucesso: bool,
+):
+    """Persiste uma métrica de execução do RAG."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO metricas_atendimento (
+                empresa_id, tipo, total_segundos, cache_hit, sucesso
+            ) VALUES (?, 'rag', ?, ?, ?)
+            """,
+            (empresa_id, total_segundos, int(cache_hit), int(sucesso)),
+        )
+        await db.commit()
+
+
+async def listar_metricas_empresa(empresa_id: int, janela_horas: int = 24) -> list[dict]:
+    """Lista métricas recentes da empresa."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM metricas_atendimento
+            WHERE empresa_id = ?
+              AND criado_em >= datetime('now', ?)
+            ORDER BY id DESC
+            """,
+            (empresa_id, f"-{janela_horas} hours"),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def criar_faq(empresa_id: int, pergunta: str, resposta: str) -> int:
     """Cria uma FAQ da empresa e retorna o ID."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -528,6 +603,7 @@ async def limpar_faqs(empresa_id: int) -> int:
 async def excluir_empresa_com_dados(empresa_id: int):
     """Remove empresa, documentos e histórico associados."""
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM metricas_atendimento WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM conversas WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM faqs WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM documentos WHERE empresa_id = ?", (empresa_id,))
