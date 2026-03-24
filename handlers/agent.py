@@ -40,8 +40,19 @@ def _log_task_exception(task: asyncio.Task) -> None:
     """Registra falhas de tarefas em background sem interromper a resposta ao usuário."""
     try:
         task.result()
+    except asyncio.CancelledError:
+        return
     except Exception as exc:
         logger.warning("Falha em tarefa assíncrona de pós-resposta: %s", exc, exc_info=True)
+
+
+def invalidar_cache_faq(empresa_id: int | None = None) -> None:
+    """Remove entradas de FAQ em memória após alterações administrativas."""
+    if empresa_id is None:
+        _faq_cache.clear()
+        return
+
+    _faq_cache.pop(empresa_id, None)
 
 
 async def _obter_faqs_cacheadas(empresa_id: int) -> list[dict]:
@@ -52,10 +63,13 @@ async def _obter_faqs_cacheadas(empresa_id: int) -> list[dict]:
         return cache.items
 
     items = await listar_faqs(empresa_id)
-    _faq_cache[empresa_id] = _FaqCacheEntry(
-        expires_at=agora + _FAQ_CACHE_TTL_SECONDS,
-        items=items,
-    )
+    if items:
+        _faq_cache[empresa_id] = _FaqCacheEntry(
+            expires_at=agora + _FAQ_CACHE_TTL_SECONDS,
+            items=items,
+        )
+    else:
+        _faq_cache.pop(empresa_id, None)
     return items
 
 

@@ -48,6 +48,20 @@ _MENSAGENS_TRIVIAIS = {
     "como c vai",
 }
 
+_PERGUNTAS_BAIXA_INFORMACAO = {
+    "ajuda",
+    "me ajuda",
+    "preciso de ajuda",
+    "socorro",
+    "duvida",
+    "dúvida",
+    "tenho uma duvida",
+    "tenho uma dúvida",
+    "informacao",
+    "informação",
+    "info",
+}
+
 
 @dataclass(frozen=True)
 class ResponseDecision:
@@ -156,8 +170,11 @@ def deve_usar_rag(pergunta: str) -> bool:
     if detectar_mensagem_trivial(pergunta_normalizada):
         return False
 
+    if pergunta_normalizada in _PERGUNTAS_BAIXA_INFORMACAO:
+        return False
+
     palavras = pergunta_normalizada.split()
-    if len(palavras) <= 2 and not any(char.isdigit() for char in pergunta_normalizada):
+    if len(palavras) == 1 and not any(char.isdigit() for char in pergunta_normalizada):
         return False
 
     gatilhos_rag = [
@@ -217,7 +234,10 @@ def deve_usar_rag(pergunta: str) -> bool:
         "cancel",
         "suporte",
     ]
-    return any(gatilho in pergunta_normalizada for gatilho in gatilhos_rag) or len(palavras) >= 5
+    if any(gatilho in pergunta_normalizada for gatilho in gatilhos_rag):
+        return True
+
+    return len(palavras) >= 2
 
 
 def decidir_resposta(

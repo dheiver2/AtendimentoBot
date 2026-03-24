@@ -25,6 +25,7 @@ from .common import (
     _editar_ou_responder,
     _obter_empresa_admin_ou_responder,
 )
+from .agent import invalidar_cache_faq
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ async def cmd_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if acao in {"limpar", "apagar"}:
             removidas = await limpar_faqs(empresa["id"])
+            invalidar_cache_faq(empresa["id"])
             await mensagem.reply_text(f"🧹 {removidas} FAQ(s) removida(s).")
             return ConversationHandler.END
 
@@ -147,6 +149,7 @@ async def cmd_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             removida = await excluir_faq(empresa["id"], int(context.args[1]))
             if removida:
+                invalidar_cache_faq(empresa["id"])
                 await mensagem.reply_text("🗑 FAQ removida com sucesso.")
             else:
                 await mensagem.reply_text("⚠️ FAQ não encontrada.")
@@ -196,6 +199,7 @@ async def receber_faq_resposta(update: Update, context: ContextTypes.DEFAULT_TYP
         return AGUARDANDO_FAQ_RESPOSTA
 
     await criar_faq(empresa_id, pergunta, resposta)
+    invalidar_cache_faq(empresa_id)
     context.user_data.pop("empresa_faq_id", None)
     context.user_data.pop("faq_pergunta", None)
 
@@ -240,6 +244,7 @@ async def faq_excluir_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     faq_id = int(query.data.split(":", 1)[1])
     removida = await excluir_faq(empresa["id"], faq_id)
     if removida:
+        invalidar_cache_faq(empresa["id"])
         await query.message.reply_text("🗑 FAQ removida com sucesso.")
     else:
         await query.message.reply_text("⚠️ FAQ não encontrada.")
@@ -256,5 +261,6 @@ async def faq_limpar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     removidas = await limpar_faqs(empresa["id"])
+    invalidar_cache_faq(empresa["id"])
     await query.message.reply_text(f"🧹 {removidas} FAQ(s) removida(s).")
     await _mostrar_faqs(update, empresa)
