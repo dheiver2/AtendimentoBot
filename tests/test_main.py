@@ -6,13 +6,14 @@ from telegram.error import Conflict
 
 
 class ErrorHandlerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_conflict_error_nao_propaga(self):
+    async def test_conflict_error_para_aplicacao(self):
         from main import error_handler
 
         ctx = MagicMock()
         ctx.error = Conflict("Conflict: terminated by other getUpdates request")
+        ctx.application = MagicMock()
         await error_handler(MagicMock(), ctx)
-        # Não deve lançar exceção
+        ctx.application.stop_running.assert_called_once()
 
     async def test_erro_generico_responde_usuario(self):
         from main import error_handler
@@ -60,4 +61,4 @@ class MainFunctionTests(unittest.TestCase):
 
         with self.assertRaises(ValueError) as ctx:
             main()
-        self.assertIn("GOOGLE_API_KEY", str(ctx.exception))
+        self.assertIn("OPENROUTER_API_KEY", str(ctx.exception))

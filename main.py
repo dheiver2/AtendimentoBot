@@ -30,9 +30,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     if isinstance(error, Conflict):
         logger.critical(
             "Outra instância do bot já está rodando com o mesmo token. "
-            "Encerre a outra instância antes de iniciar esta. Erro: %s",
+            "Encerre a outra instância antes de iniciar esta. Encerrando esta instância. Erro: %s",
             error,
         )
+        context.application.stop_running()
         return
 
     logger.error("Erro não tratado: %s", error, exc_info=error)
