@@ -1,6 +1,8 @@
 # AtendimentoBot
 
-Bot de atendimento ao cliente no Telegram com RAG (Retrieval-Augmented Generation) e dois perfis de acesso:
+Bot de atendimento ao cliente com RAG (Retrieval-Augmented Generation), onboarding via Telegram e suporte opcional ao WhatsApp Cloud API da Meta.
+
+Perfis atuais:
 
 - **admin**: configura a empresa, o agente, os documentos e gera o link de atendimento
 - **cliente**: entra pelo link enviado pelo admin e usa o bot apenas para conversar
@@ -18,6 +20,7 @@ Bot de atendimento ao cliente no Telegram com RAG (Retrieval-Augmented Generatio
 - Gestão de documentos via painel inline (`/documentos`)
 - Imagem personalizada do agente (`/imagem`)
 - Identidade visual por empresa na conversa do cliente
+- Atendimento simultâneo via Telegram e WhatsApp Cloud API
 - Capa automática com imagem, nome e saudação da empresa
 - Reenvio da identidade visual na primeira interação do cliente
 - Horário de atendimento e fallback para atendimento humano
@@ -34,12 +37,14 @@ Bot de atendimento ao cliente no Telegram com RAG (Retrieval-Augmented Generatio
 ```
 main.py                  → Ponto de entrada, configura polling
 config.py                → Caminhos, diretórios, versão
+agent_service.py         → Núcleo reutilizável do atendimento para Telegram/WhatsApp
 database.py              → CRUD assíncrono com aiosqlite
 rag_chain.py             → Pipeline RAG com LangChain + OpenRouter
 vector_store.py          → Indexação e busca FAISS com embeddings locais
 document_processor.py    → Extração de texto multi-formato
 bot_profile_photo.py     → Gestão de imagens do agente
 telegram_commands.py     → Menu nativo do Telegram por perfil
+whatsapp_cloud_api.py    → Webhook HTTP e envio pela API oficial da Meta
 validators.py            → Validação e sanitização de entradas
 rate_limiter.py          → Rate limiting em memória por usuário
 handlers/                → Pacote de handlers do bot
@@ -60,6 +65,8 @@ tests/                   → Suite de testes automatizados
 - Python 3.11 a 3.13
 - `TELEGRAM_BOT_TOKEN` (obtido com [@BotFather](https://t.me/BotFather))
 - `OPENROUTER_API_KEY` (obtida em [OpenRouter](https://openrouter.ai/keys))
+- Para WhatsApp: `WHATSAPP_CLOUD_API_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`
+- Para receber mensagens no WhatsApp: uma URL HTTPS pública apontando para o webhook deste projeto
 
 ## Instalação
 
@@ -98,7 +105,42 @@ TELEGRAM_BOT_TOKEN=seu_token
 OPENROUTER_API_KEY=sua_chave
 OPENROUTER_MODELS=qwen/qwen3.5-plus-02-15,deepseek/deepseek-v3.2
 EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+# Opcional: WhatsApp Cloud API da Meta
+WHATSAPP_CLOUD_API_ENABLED=1
+WHATSAPP_CLOUD_API_ACCESS_TOKEN=seu_token_permanente_meta
+WHATSAPP_PHONE_NUMBER_ID=seu_phone_number_id
+WHATSAPP_BUSINESS_ACCOUNT_ID=seu_waba_id
+WHATSAPP_VERIFY_TOKEN=um_token_secreto_escolhido_por_voce
+WHATSAPP_WEBHOOK_PORT=8080
+WHATSAPP_WEBHOOK_PATH=/webhook/whatsapp
 ```
+
+### WhatsApp Cloud API
+
+O projeto agora consegue responder mensagens recebidas pelo WhatsApp Cloud API usando a mesma base RAG do Telegram.
+
+Como funciona hoje:
+
+- O Telegram continua sendo o canal administrativo para onboarding, documentos, FAQ e ajustes do agente.
+- O WhatsApp usa a empresa cadastrada no banco para responder clientes pelo numero configurado na Meta.
+- Se existir apenas uma empresa cadastrada, ela sera usada automaticamente no WhatsApp.
+- Se existir mais de uma empresa, defina `WHATSAPP_DEFAULT_COMPANY_ID` ou `WHATSAPP_DEFAULT_COMPANY_LINK_TOKEN` no `.env`.
+
+Passo a passo:
+
+1. Na tela `Configuracao da API` da Meta, copie o `Phone Number ID` e o `WhatsApp Business Account ID`.
+2. Gere um token permanente de usuario do sistema e preencha `WHATSAPP_CLOUD_API_ACCESS_TOKEN`.
+3. Defina um segredo proprio em `WHATSAPP_VERIFY_TOKEN`.
+4. Suba o projeto com `python main.py`.
+5. Exponha a porta configurada com uma URL HTTPS publica, por exemplo via proxy reverso ou tunel.
+6. Na Meta, configure o webhook apontando para `https://seu-dominio/webhook/whatsapp` e use o mesmo `WHATSAPP_VERIFY_TOKEN`.
+
+Observacoes:
+
+- O webhook responde apenas mensagens recebidas; ele nao envia campanhas nem mensagens proativas.
+- O numero de teste da Meta precisa estar com o destinatario habilitado na propria tela de configuracao da API.
+- Se voce ativar apenas o WhatsApp e nao usar Telegram, o app sobe somente o webhook HTTP. Nesse modo, a empresa precisa ja existir no banco.
 
 ## Personalização Por Empresa
 
@@ -133,6 +175,8 @@ O sistema separa conteúdo, saudação, imagem, FAQs, documentos e identidade vi
 ```bash
 python main.py
 ```
+
+Se `WHATSAPP_CLOUD_API_ENABLED=1`, o mesmo comando sobe o polling do Telegram e o webhook HTTP do WhatsApp ao mesmo tempo.
 
 ## Testes
 

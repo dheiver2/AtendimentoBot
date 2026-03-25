@@ -287,6 +287,17 @@ async def obter_empresa_por_id(empresa_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def listar_empresas() -> list[dict]:
+    """Lista todas as empresas cadastradas."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM empresas ORDER BY id ASC",
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def obter_empresa_por_link_token(link_token: str) -> dict | None:
     """Busca empresa pelo token compartilhável do link Telegram."""
     async with aiosqlite.connect(DB_PATH) as db:

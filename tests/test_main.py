@@ -47,10 +47,12 @@ class ErrorHandlerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MainFunctionTests(unittest.TestCase):
-    @patch.dict("os.environ", {}, clear=True)
-    def test_sem_token_gera_erro(self):
+    @patch("main.WhatsAppCloudSettings.from_env")
+    @patch("main.os.getenv", side_effect=lambda k, d=None: {"OPENROUTER_API_KEY": "router-key"}.get(k, d))
+    def test_sem_token_gera_erro(self, mock_getenv, mock_whatsapp_settings):
         from main import main
 
+        mock_whatsapp_settings.return_value.enabled = False
         with self.assertRaises(ValueError) as ctx:
             main()
         self.assertIn("TELEGRAM_BOT_TOKEN", str(ctx.exception))
@@ -63,6 +65,29 @@ class MainFunctionTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             main()
         self.assertIn("OPENROUTER_API_KEY", str(ctx.exception))
+
+    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "router-key"}, clear=True)
+    def test_inicia_apenas_whatsapp_quando_telegram_nao_configurado(self):
+        from main import main
+        from whatsapp_cloud_api import WhatsAppCloudSettings
+
+        settings = WhatsAppCloudSettings(
+            enabled=True,
+            access_token="secret-token",
+            phone_number_id="1028026920393619",
+            verify_token="verify-me",
+        )
+
+        with patch("main.init_db", new_callable=AsyncMock) as mock_init:
+            with patch("main.WhatsAppCloudSettings.from_env", return_value=settings):
+                with patch("main.WhatsAppWebhookServer") as mock_server_cls:
+                    server = mock_server_cls.return_value
+                    main()
+
+        mock_init.assert_awaited_once()
+        mock_server_cls.assert_called_once_with(settings)
+        server.serve_forever.assert_called_once()
+        server.shutdown.assert_called_once()
 
 
 class PostInitTests(unittest.IsolatedAsyncioTestCase):
