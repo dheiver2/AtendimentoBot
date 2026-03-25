@@ -25,6 +25,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
+    """Retorna o loop atual ou cria um novo quando o Python 3.12 não expõe um padrão."""
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Trata erros globais não capturados pelos handlers."""
     error = context.error
@@ -82,7 +92,8 @@ def main():
             "Configure TELEGRAM_BOT_TOKEN no .env ou habilite WHATSAPP_CLOUD_API_ENABLED=1."
         )
 
-    asyncio.run(init_db())
+    event_loop = _get_or_create_event_loop()
+    event_loop.run_until_complete(init_db())
     whatsapp_server: WhatsAppWebhookServer | None = None
 
     if whatsapp_settings.enabled:
