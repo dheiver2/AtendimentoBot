@@ -9,6 +9,7 @@ require("dotenv").config({ path: path.resolve(__dirname, "..", ".env") });
 const qrcode = require("qrcode-terminal");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const {
+  clearLocalAuthSession,
   getMessageId,
   normalizeInboundMessageType,
   normalizeWidSerialized,
@@ -65,6 +66,14 @@ const statusPort = Number.parseInt(process.env.WHATSAPP_WEB_CLIENT_PORT || "8011
 const statusPath = normalizePath(process.env.WHATSAPP_WEB_CLIENT_HEALTH_PATH, "/health");
 const clientId = String(process.env.WHATSAPP_WEB_CLIENT_ID || "atendimento-bot").trim() || "atendimento-bot";
 const sessionDir = resolvePath(process.env.WHATSAPP_WEB_SESSION_DIR, DEFAULT_SESSION_DIR);
+const forceNewQr = isTruthy(process.env.WHATSAPP_WEB_FORCE_NEW_QR);
+
+if (forceNewQr) {
+  const clearedSessionPath = clearLocalAuthSession(sessionDir, clientId, fs);
+  if (clearedSessionPath) {
+    console.log(`Sessao anterior removida para forcar novo QR Code: ${clearedSessionPath}`);
+  }
+}
 
 fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -84,6 +93,7 @@ function statusPayload() {
     bridgeUrl: `http://${bridgeHost}:${bridgePort}${bridgePath}`,
     sessionDir,
     clientId,
+    forceNewQr,
     ownNumber: client.info?.wid?.user || null,
   };
 }

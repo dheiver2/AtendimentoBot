@@ -120,6 +120,8 @@ WHATSAPP_WEB_CLIENT_HOST=127.0.0.1
 WHATSAPP_WEB_CLIENT_PORT=8011
 WHATSAPP_WEB_CLIENT_ID=atendimento-bot
 WHATSAPP_WEB_SESSION_DIR=data/whatsapp-web-session
+# Use 1 para apagar a sessao salva e forcar novo QR a cada execucao do bridge.
+WHATSAPP_WEB_FORCE_NEW_QR=0
 ```
 
 ### WhatsApp Web
@@ -144,6 +146,7 @@ Passo a passo:
    Em Linux sem sessao grafica, deixe `WHATSAPP_WEB_AUTO_LAUNCH=0` e rode o comando manualmente.
 5. Escaneie o QR code exibido nesse novo terminal.
 6. Depois da primeira autenticacao, a sessao fica salva em `data/whatsapp-web-session`.
+   Se `WHATSAPP_WEB_FORCE_NEW_QR=1`, essa sessao sera apagada no start e um novo QR sera exibido em toda execucao.
 7. Para administrar pelo WhatsApp, use comandos como `/start`, `/painel`, `/upload`, `/faq`, `/imagem`, `/status` e `/link`.
 8. Para clientes, gere o token com `/link` e oriente o envio de `/start TOKEN`.
 

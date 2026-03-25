@@ -1,5 +1,7 @@
 "use strict";
 
+const path = require("path");
+
 const SENT_MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const DOWNLOADABLE_MEDIA_TYPES = new Set(["image", "document"]);
 const TEXT_EQUIVALENT_TYPES = new Set(["interactive", "buttons_response", "list_response"]);
@@ -128,8 +130,31 @@ async function shouldIgnoreMessage(message, ownWid, sentMessageIds, now = Date.n
   return from !== ownChatId && to !== ownChatId;
 }
 
+function getLocalAuthSessionPath(dataPath, clientId) {
+  const basePath = String(dataPath || "").trim();
+  if (!basePath) {
+    return "";
+  }
+
+  const normalizedClientId = String(clientId || "").trim();
+  const sessionName = normalizedClientId ? `session-${normalizedClientId}` : "session";
+  return path.join(basePath, sessionName);
+}
+
+function clearLocalAuthSession(dataPath, clientId, fsModule) {
+  const sessionPath = getLocalAuthSessionPath(dataPath, clientId);
+  if (!sessionPath || !fsModule || typeof fsModule.rmSync !== "function") {
+    return "";
+  }
+
+  fsModule.rmSync(sessionPath, { recursive: true, force: true });
+  return sessionPath;
+}
+
 module.exports = {
+  clearLocalAuthSession,
   getMessageId,
+  getLocalAuthSessionPath,
   normalizeWidSerialized,
   normalizeInboundMessageType,
   rememberSentMessage,

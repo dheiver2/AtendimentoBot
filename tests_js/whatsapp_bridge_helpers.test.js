@@ -2,8 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const {
+  clearLocalAuthSession,
   normalizeInboundMessageType,
   rememberSentMessage,
   shouldDownloadInboundMedia,
@@ -82,4 +84,37 @@ test("continua ignorando mensagem enviada para outro contato", async () => {
   );
 
   assert.equal(shouldIgnore, true);
+});
+
+test("limpa apenas a sessao LocalAuth do clientId atual", () => {
+  const calls = [];
+  const fsMock = {
+    rmSync(target, options) {
+      calls.push({ target, options });
+    },
+  };
+
+  const sessionPath = clearLocalAuthSession("/tmp/whatsapp", "atendimento-bot", fsMock);
+
+  assert.equal(sessionPath, path.join("/tmp/whatsapp", "session-atendimento-bot"));
+  assert.deepEqual(calls, [
+    {
+      target: path.join("/tmp/whatsapp", "session-atendimento-bot"),
+      options: { recursive: true, force: true },
+    },
+  ]);
+});
+
+test("nao tenta limpar sessao quando o diretorio base nao foi definido", () => {
+  const calls = [];
+  const fsMock = {
+    rmSync(target, options) {
+      calls.push({ target, options });
+    },
+  };
+
+  const sessionPath = clearLocalAuthSession("", "atendimento-bot", fsMock);
+
+  assert.equal(sessionPath, "");
+  assert.deepEqual(calls, []);
 });
