@@ -10,6 +10,10 @@ from validators import (
     InputValidationError,
     validar_fallback,
     validar_horario,
+    validar_instrucoes,
+    validar_nome_bot,
+    validar_nome_empresa,
+    validar_saudacao,
 )
 
 from .common import (
@@ -27,6 +31,13 @@ CAMPOS_EDITAVEIS = {
     "editar_nome_bot": ("nome_bot", "nome do assistente"),
     "editar_saudacao": ("saudacao", "mensagem de saudação"),
     "editar_instrucoes": ("instrucoes", "instruções do bot"),
+}
+
+VALIDADORES_CAMPOS_EDITAVEIS = {
+    "nome": validar_nome_empresa,
+    "nome_bot": validar_nome_bot,
+    "saudacao": validar_saudacao,
+    "instrucoes": validar_instrucoes,
 }
 
 
@@ -54,6 +65,14 @@ def _formatar_templates_instrucao(template_key_atual: str | None) -> str:
         ]
     )
     return "\n".join(linhas)
+
+
+def _validar_valor_campo_editavel(campo: str, valor: str) -> str:
+    """Aplica a mesma validação do onboarding aos campos editáveis."""
+    validador = VALIDADORES_CAMPOS_EDITAVEIS.get(campo)
+    if not validador:
+        raise InputValidationError("Campo de edição inválido.")
+    return validador(valor)
 
 
 async def _definir_status_agente(update: Update, context: ContextTypes.DEFAULT_TYPE, ativo: bool):
@@ -296,7 +315,12 @@ async def receber_valor_editado(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ Erro interno. Use /editar novamente.")
         return ConversationHandler.END
 
-    novo_valor = update.message.text.strip()
+    try:
+        novo_valor = _validar_valor_campo_editavel(campo, update.message.text)
+    except InputValidationError as e:
+        await update.message.reply_text(f"⚠️ {e.message}")
+        return EDITANDO_CAMPO
+
     await atualizar_empresa(empresa_id, **{campo: novo_valor})
 
     await update.message.reply_text(

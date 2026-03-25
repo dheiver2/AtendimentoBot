@@ -20,7 +20,7 @@ from handlers.common import (
 )
 from handlers.documents import _reindexar_base_empresa, _teclado_documentos
 from handlers.faq import _teclado_faqs
-from response_intelligence import detectar_pedido_humano, detectar_pergunta_horario
+from response_intelligence import decidir_resposta, detectar_pedido_humano, detectar_pergunta_horario
 
 
 class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
@@ -166,6 +166,29 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(detectar_pergunta_horario("Qual o horário de atendimento?"))
         self.assertTrue(detectar_pergunta_horario("Vocês estão aberto agora?"))
         self.assertFalse(detectar_pergunta_horario("Qual o preço?"))
+        self.assertFalse(detectar_pergunta_horario("Como funciona o atendimento?"))
+        self.assertFalse(detectar_pergunta_horario("Quais regras de atendimento vocês seguem?"))
+
+    def test_decidir_resposta_combina_horario_e_contato_humano(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "Seg a Sex",
+            "fallback_contato": "suporte@test.com",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "Qual é o horário e o telefone?",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "human")
+        self.assertIn("Seg a Sex", decisao.answer)
+        self.assertIn("suporte@test.com", decisao.answer)
 
     def test_formatar_resposta_pausado(self):
         empresa = {

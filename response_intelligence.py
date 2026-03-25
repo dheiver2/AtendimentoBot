@@ -1,4 +1,5 @@
 """Camada de decisão para escolher a estratégia de resposta do atendimento."""
+import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -62,6 +63,54 @@ _PERGUNTAS_BAIXA_INFORMACAO = {
     "informação",
     "info",
 }
+
+_HUMAN_REQUEST_FRAGMENTS = (
+    "falar com atendente",
+    "falar com humano",
+    "atendimento humano",
+    "quero um atendente",
+    "quero falar com alguem",
+    "quero falar com uma pessoa",
+    "me encaminha para um atendente",
+)
+
+_HUMAN_CONTACT_PATTERNS = (
+    re.compile(
+        r"\b(?:qual\s+e\s+o|qual\s+o|preciso\s+do|preciso\s+de|quero\s+o|quero\s+um)\b"
+        r"(?:\s+\w+){0,3}\s+(?:telefone|whatsapp|numero|contato)\b"
+    ),
+    re.compile(
+        r"\bme\s+(?:passa|passe|informa|informe)\b"
+        r"(?:\s+\w+){0,3}\s+(?:telefone|whatsapp|numero|contato)\b"
+    ),
+    re.compile(
+        r"\b(?:telefone|whatsapp|numero|contato)\s+"
+        r"(?:de\s+contato|da\s+empresa|do\s+suporte|humano)\b"
+    ),
+)
+
+_SHORT_HUMAN_CONTACT_TOKENS = {"telefone", "whatsapp", "numero", "contato"}
+
+_HOURS_REQUEST_FRAGMENTS = (
+    "horario de atendimento",
+    "horario de funcionamento",
+    "qual o horario",
+    "qual e o horario",
+    "que horas",
+    "aberto agora",
+    "esta aberto",
+    "estao abertos",
+    "estarao abertos",
+    "funcionamento",
+    "expediente",
+)
+
+_HOURS_REQUEST_PATTERNS = (
+    re.compile(
+        r"\b(?:abre|abrem|fecha|fecham|funciona|funcionam)\b"
+        r"(?:\s+\w+){0,3}\s+\b(?:hoje|amanha|agora)\b"
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -155,24 +204,23 @@ def resposta_trivial(empresa: dict, pergunta: str) -> str:
 def detectar_pedido_humano(pergunta: str) -> bool:
     """Detecta pedidos explícitos de encaminhamento para humano/contato."""
     pergunta_normalizada = normalizar_texto(pergunta)
-    gatilhos = [
-        "falar com atendente",
-        "falar com humano",
-        "atendimento humano",
-        "quero um atendente",
-        "quero falar com alguem",
-        "telefone",
-        "whatsapp",
-        "contato",
-    ]
-    return any(gatilho in pergunta_normalizada for gatilho in gatilhos)
+    if any(gatilho in pergunta_normalizada for gatilho in _HUMAN_REQUEST_FRAGMENTS):
+        return True
+
+    if any(pattern.search(pergunta_normalizada) for pattern in _HUMAN_CONTACT_PATTERNS):
+        return True
+
+    palavras = [palavra.strip("?!.,:;") for palavra in pergunta_normalizada.split()]
+    return len(palavras) <= 2 and any(palavra in _SHORT_HUMAN_CONTACT_TOKENS for palavra in palavras)
 
 
 def detectar_pergunta_horario(pergunta: str) -> bool:
     """Detecta perguntas sobre horário de atendimento."""
     pergunta_normalizada = normalizar_texto(pergunta)
-    gatilhos = ["horario", "atendimento", "aberto", "funciona", "expediente"]
-    return any(gatilho in pergunta_normalizada for gatilho in gatilhos)
+    if any(gatilho in pergunta_normalizada for gatilho in _HOURS_REQUEST_FRAGMENTS):
+        return True
+
+    return any(pattern.search(pergunta_normalizada) for pattern in _HOURS_REQUEST_PATTERNS)
 
 
 def deve_usar_rag(pergunta: str) -> bool:
@@ -264,14 +312,27 @@ def decidir_resposta(
     if not bool(empresa.get("ativo", 1)):
         return ResponseDecision("paused", answer=resposta_pausado, reason="agent_paused")
 
-    if empresa.get("fallback_contato") and detectar_pedido_humano(pergunta):
+    solicitou_humano = bool(empresa.get("fallback_contato")) and detectar_pedido_humano(pergunta)
+    solicitou_horario = bool(empresa.get("horario_atendimento")) and detectar_pergunta_horario(pergunta)
+
+    if solicitou_humano and solicitou_horario:
+        return ResponseDecision(
+            "human",
+            answer=(
+                f"🕒 Horário de atendimento: {empresa['horario_atendimento']}\n"
+                f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}"
+            ),
+            reason="hours_and_human_request",
+        )
+
+    if solicitou_humano:
         return ResponseDecision(
             "human",
             answer=f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}",
             reason="explicit_human_request",
         )
 
-    if empresa.get("horario_atendimento") and detectar_pergunta_horario(pergunta):
+    if solicitou_horario:
         return ResponseDecision(
             "hours",
             answer=f"🕒 Horário de atendimento: {empresa['horario_atendimento']}",

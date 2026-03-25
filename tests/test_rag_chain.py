@@ -9,6 +9,10 @@ class RagChainTests(unittest.TestCase):
     def setUp(self):
         rag_chain._response_cache.clear()
 
+    def test_template_considera_regras_operacionais(self):
+        self.assertIn("regras operacionais", rag_chain.TEMPLATE.lower())
+        self.assertNotIn("APENAS com base no contexto", rag_chain.TEMPLATE)
+
     def test_classifica_pergunta_curta(self):
         instrucoes, quantidade_chunks, max_tokens = rag_chain._classificar_dosagem_resposta(
             "Qual o horário?"

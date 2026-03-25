@@ -247,6 +247,23 @@ class ReceberValorEditadoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, ConversationHandler.END)
         mock_att.assert_called_once_with(1, nome="Novo Nome Corp")
 
+    @patch("handlers.settings.atualizar_empresa", new_callable=AsyncMock)
+    async def test_valida_campo_antes_de_salvar(self, mock_att):
+        from handlers.common import EDITANDO_CAMPO
+        from handlers.settings import receber_valor_editado
+
+        update = make_update("A")
+        ctx = make_context(user_data={
+            "empresa_editar_id": 1,
+            "campo_editando": "nome",
+            "campo_editando_nome": "nome da empresa",
+        })
+        result = await receber_valor_editado(update, ctx)
+
+        self.assertEqual(result, EDITANDO_CAMPO)
+        mock_att.assert_not_called()
+        self.assertIn("pelo menos 2 caracteres", update.message.reply_text.call_args[0][0])
+
     async def test_sem_estado_retorna_erro(self):
         from handlers.settings import receber_valor_editado
 

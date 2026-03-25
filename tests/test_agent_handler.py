@@ -157,7 +157,8 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.listar_faqs", return_value=[])
     @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock)
-    async def test_mensagem_trivial_nao_usa_rag(self, mock_rag, mock_faqs, mock_emp, mock_val, mock_rate):
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_mensagem_trivial_nao_usa_rag(self, mock_reg, mock_rag, mock_faqs, mock_emp, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
 
         mock_emp.return_value = self._empresa(saudacao="Olá! Como posso ajudar?")
@@ -173,7 +174,8 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.listar_faqs", return_value=[])
     @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock)
-    async def test_smalltalk_como_vai_nao_usa_rag(self, mock_rag, mock_faqs, mock_emp, mock_val, mock_rate):
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_smalltalk_como_vai_nao_usa_rag(self, mock_reg, mock_rag, mock_faqs, mock_emp, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
 
         mock_emp.return_value = self._empresa()
@@ -190,7 +192,8 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.agent.listar_faqs", return_value=[])
     @patch("handlers.agent.empresa_tem_documentos", return_value=True)
     @patch("handlers.agent.gerar_resposta", new_callable=AsyncMock)
-    async def test_mensagem_vaga_nao_usa_rag(self, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
+    @patch("handlers.agent.registrar_conversa", new_callable=AsyncMock)
+    async def test_mensagem_vaga_nao_usa_rag(self, mock_reg, mock_rag, mock_docs, mock_faqs, mock_emp, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
 
         mock_emp.return_value = self._empresa(fallback_contato="suporte@x.com")
