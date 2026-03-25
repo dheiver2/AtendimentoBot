@@ -110,6 +110,7 @@ EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 
 # Opcional: WhatsApp Web via QR code
 WHATSAPP_WEB_ENABLED=1
+# Em Linux headless/servidor sem DISPLAY, use 0 e rode o bridge manualmente.
 WHATSAPP_WEB_AUTO_LAUNCH=1
 WHATSAPP_WEB_BRIDGE_HOST=127.0.0.1
 WHATSAPP_WEB_BRIDGE_PORT=8010
@@ -140,6 +141,7 @@ Passo a passo:
 2. Ative `WHATSAPP_WEB_ENABLED=1` no `.env`.
 3. Suba o projeto com `python main.py`.
 4. O app inicia o bridge Python e tenta abrir `npm run whatsapp:bridge` em um novo terminal.
+   Em Linux sem sessao grafica, deixe `WHATSAPP_WEB_AUTO_LAUNCH=0` e rode o comando manualmente.
 5. Escaneie o QR code exibido nesse novo terminal.
 6. Depois da primeira autenticacao, a sessao fica salva em `data/whatsapp-web-session`.
 7. Para administrar pelo WhatsApp, use comandos como `/start`, `/painel`, `/upload`, `/faq`, `/imagem`, `/status` e `/link`.
@@ -149,6 +151,7 @@ Observacoes:
 
 - O terminal do WhatsApp precisa continuar aberto enquanto o atendimento estiver ativo.
 - Se o novo terminal nao abrir automaticamente, execute `npm run whatsapp:bridge` manualmente em outro terminal.
+- Em Linux headless, configure `WHATSAPP_WEB_AUTO_LAUNCH=0` para evitar a tentativa de abrir terminal grafico.
 - O bridge atual trata texto, imagens do fluxo `/imagem` e documentos do fluxo `/upload` ou envio direto do admin.
 - Conversas em grupo, newsletters e tipos de mídia nao tratados continuam fora do escopo.
 - Se voce ativar apenas o WhatsApp e nao usar Telegram, o app continua permitindo onboarding e gerenciamento pelo proprio WhatsApp.

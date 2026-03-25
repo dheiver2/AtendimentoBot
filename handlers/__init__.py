@@ -1,4 +1,6 @@
 """Pacote de handlers do bot — exporta get_handlers() para o main.py."""
+import warnings
+
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -6,6 +8,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.warnings import PTBUserWarning
 
 from .agent import feedback_resposta_callback, interagir_com_agente
 from .common import (
@@ -94,12 +97,27 @@ from .settings import (
     receber_valor_editado,
 )
 
+_PTB_PER_MESSAGE_WARNING = (
+    r"If 'per_message=False', 'CallbackQueryHandler' will not be tracked for every message\..*"
+)
+
+
+def _build_conversation_handler(*args, **kwargs) -> ConversationHandler:
+    """Cria fluxos mistos de botões e mensagens sem repetir o warning conhecido do PTB."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=_PTB_PER_MESSAGE_WARNING,
+            category=PTBUserWarning,
+        )
+        return ConversationHandler(*args, **kwargs)
+
 
 def get_handlers() -> list:
     """Retorna todos os handlers do bot."""
 
     # ConversationHandler para onboarding da empresa do usuário
-    registro_handler = ConversationHandler(
+    registro_handler = _build_conversation_handler(
         entry_points=[
             CommandHandler("start", cmd_start),
             CommandHandler("registrar", cmd_registrar),
@@ -128,7 +146,7 @@ def get_handlers() -> list:
     )
 
     # ConversationHandler para upload de documentos
-    upload_handler = ConversationHandler(
+    upload_handler = _build_conversation_handler(
         entry_points=[
             CommandHandler("upload", cmd_upload),
             CallbackQueryHandler(painel_upload_callback, pattern="^painel_upload$"),
@@ -144,7 +162,7 @@ def get_handlers() -> list:
     )
 
     # ConversationHandler para a imagem própria do agente
-    imagem_handler = ConversationHandler(
+    imagem_handler = _build_conversation_handler(
         entry_points=[
             CommandHandler("imagem", cmd_imagem),
             CallbackQueryHandler(painel_imagem_callback, pattern="^painel_imagem$"),
@@ -158,7 +176,7 @@ def get_handlers() -> list:
         allow_reentry=True,
     )
 
-    autonomia_handler = ConversationHandler(
+    autonomia_handler = _build_conversation_handler(
         entry_points=[
             CommandHandler("horario", cmd_horario),
             CommandHandler("fallback", cmd_fallback),
@@ -179,7 +197,7 @@ def get_handlers() -> list:
     )
 
     # ConversationHandler para edição
-    editar_handler = ConversationHandler(
+    editar_handler = _build_conversation_handler(
         entry_points=[
             CommandHandler("editar", cmd_editar),
             CallbackQueryHandler(painel_editar_callback, pattern="^painel_editar$"),

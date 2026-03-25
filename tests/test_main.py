@@ -46,6 +46,21 @@ class ErrorHandlerTests(unittest.IsolatedAsyncioTestCase):
         await error_handler(object(), ctx)
 
 
+class RunAsyncTests(unittest.TestCase):
+    def test_run_async_usa_asyncio_runner(self):
+        from main import _run_async
+
+        awaitable = object()
+        with patch("main.asyncio.Runner") as mock_runner_cls:
+            runner = mock_runner_cls.return_value.__enter__.return_value
+            runner.run.return_value = "ok"
+
+            result = _run_async(awaitable)
+
+        self.assertEqual(result, "ok")
+        runner.run.assert_called_once_with(awaitable)
+
+
 class MainFunctionTests(unittest.TestCase):
     @patch("main.WhatsAppWebSettings.from_env")
     @patch("main.os.getenv", side_effect=lambda k, d=None: {"OPENROUTER_API_KEY": "router-key"}.get(k, d))

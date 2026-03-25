@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import time
+from typing import Awaitable, TypeVar
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -29,15 +30,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
 
-def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
-    """Retorna o loop atual ou cria um novo quando o Python 3.12 não expõe um padrão."""
-    try:
-        return asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
+
+def _run_async(coro: Awaitable[T]) -> T:
+    """Executa uma coroutine em um runner isolado para inicializações síncronas."""
+    with asyncio.Runner() as runner:
+        return runner.run(coro)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -97,8 +96,7 @@ def main():
             "Configure TELEGRAM_BOT_TOKEN no .env ou habilite WHATSAPP_WEB_ENABLED=1."
         )
 
-    event_loop = _get_or_create_event_loop()
-    event_loop.run_until_complete(init_db())
+    _run_async(init_db())
     whatsapp_server: WhatsAppWebBridgeServer | None = None
 
     if whatsapp_settings.enabled:

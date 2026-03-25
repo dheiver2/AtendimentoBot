@@ -38,6 +38,7 @@ _DEFAULT_CLIENT_ID = "atendimento-bot"
 _DEFAULT_CLIENT_PORT = 8011
 _DEFAULT_LAUNCH_TIMEOUT_SECONDS = 15
 _DEFAULT_SESSION_DIR = os.path.join(DATA_DIR, "whatsapp-web-session")
+_LINUX_DISPLAY_ENV_VARS = ("DISPLAY", "WAYLAND_DISPLAY", "MIR_SOCKET")
 _MESSAGE_CACHE_TTL_SECONDS = 600
 _MAX_TEXT_MESSAGE_LENGTH = 4096
 
@@ -62,6 +63,18 @@ def _normalize_local_host(host: str | None) -> str:
     if value in {"", "0.0.0.0", "::"}:
         return "127.0.0.1"
     return value
+
+
+def _linux_graphical_session_available() -> bool:
+    return any((os.getenv(var) or "").strip() for var in _LINUX_DISPLAY_ENV_VARS)
+
+
+def _is_headless_linux_environment() -> bool:
+    return (
+        sys.platform.startswith("linux")
+        and not os.getenv("WSL_DISTRO_NAME")
+        and not _linux_graphical_session_available()
+    )
 
 
 def _truncate_text_message(text: str) -> str:
@@ -466,6 +479,9 @@ def _build_macos_launch_command(command: str) -> list[str]:
 
 
 def _build_linux_launch_command(command: str) -> list[str] | None:
+    if _is_headless_linux_environment():
+        return None
+
     shell_command = f"cd {shlex.quote(BASE_DIR)} && {command}"
     candidates: list[tuple[str, list[str]]] = [
         ("x-terminal-emulator", ["x-terminal-emulator", "-e", "bash", "-lc", shell_command]),
@@ -503,15 +519,31 @@ def launch_whatsapp_client_in_new_terminal(settings: WhatsAppWebSettings) -> boo
 
     launch_command = _build_terminal_launch_command(settings)
     if not launch_command:
-        logger.warning(
-            "Nao foi possivel abrir um novo terminal automaticamente. "
-            "Execute manualmente em outro terminal: %s",
-            settings.client_command,
-        )
+        if _is_headless_linux_environment():
+            logger.warning(
+                "Ambiente Linux sem sessao grafica (DISPLAY/WAYLAND). "
+                "Defina WHATSAPP_WEB_AUTO_LAUNCH=0 ou execute manualmente em outro terminal: %s",
+                settings.client_command,
+            )
+        else:
+            logger.warning(
+                "Nao foi possivel abrir um novo terminal automaticamente. "
+                "Execute manualmente em outro terminal: %s",
+                settings.client_command,
+            )
         return False
 
     os.makedirs(settings.session_dir, exist_ok=True)
-    subprocess.Popen(launch_command, cwd=BASE_DIR, start_new_session=True)
+    try:
+        subprocess.Popen(launch_command, cwd=BASE_DIR, start_new_session=True)
+    except OSError as exc:
+        logger.warning(
+            "Nao foi possivel iniciar o terminal do WhatsApp automaticamente: %s. "
+            "Execute manualmente em outro terminal: %s",
+            exc,
+            settings.client_command,
+        )
+        return False
 
     deadline = monotonic() + max(settings.launch_timeout_seconds, 0)
     while monotonic() < deadline:

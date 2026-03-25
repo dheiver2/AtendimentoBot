@@ -117,3 +117,22 @@ class LauncherTests(unittest.TestCase):
 
         self.assertFalse(launched)
         mock_popen.assert_not_called()
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_headless_linux_skips_graphical_auto_launch(self):
+        import whatsapp_web_bridge
+        from whatsapp_web_bridge import WhatsAppWebSettings, launch_whatsapp_client_in_new_terminal
+
+        settings = WhatsAppWebSettings(enabled=True)
+
+        with patch.object(whatsapp_web_bridge.sys, "platform", "linux"):
+            with patch.object(whatsapp_web_bridge.os, "name", "posix"):
+                with patch("whatsapp_web_bridge.is_whatsapp_client_running", return_value=False):
+                    with patch("whatsapp_web_bridge.subprocess.Popen") as mock_popen:
+                        with patch("whatsapp_web_bridge.logger.warning") as mock_warning:
+                            launched = launch_whatsapp_client_in_new_terminal(settings)
+
+        self.assertFalse(launched)
+        mock_popen.assert_not_called()
+        mock_warning.assert_called_once()
+        self.assertIn("WHATSAPP_WEB_AUTO_LAUNCH=0", mock_warning.call_args[0][0])
