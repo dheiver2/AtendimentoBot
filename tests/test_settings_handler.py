@@ -255,3 +255,55 @@ class ReceberValorEditadoTests(unittest.IsolatedAsyncioTestCase):
         result = await receber_valor_editado(update, ctx)
         self.assertEqual(result, ConversationHandler.END)
         self.assertIn("Erro", update.message.reply_text.call_args[0][0])
+
+
+class CmdTemplateTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.settings._obter_empresa_admin_ou_responder", return_value=None)
+    async def test_sem_empresa(self, mock_admin):
+        from handlers.settings import cmd_template
+
+        update = make_update()
+        ctx = make_context()
+        await cmd_template(update, ctx)
+        update.effective_message.reply_text.assert_not_called()
+
+    @patch("handlers.settings._obter_empresa_admin_ou_responder")
+    async def test_lista_templates(self, mock_admin):
+        from handlers.settings import cmd_template
+
+        mock_admin.return_value = make_empresa()
+        update = make_update()
+        ctx = make_context(args=[])
+        await cmd_template(update, ctx)
+
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Templates de instruções", texto)
+        self.assertIn("clinica", texto)
+        self.assertIn("ecommerce", texto)
+
+    @patch("handlers.settings._obter_empresa_admin_ou_responder")
+    @patch("handlers.settings.atualizar_empresa", new_callable=AsyncMock)
+    async def test_aplica_template(self, mock_update_company, mock_admin):
+        from handlers.settings import cmd_template
+
+        mock_admin.return_value = make_empresa()
+        update = make_update()
+        ctx = make_context(args=["clinica"])
+        await cmd_template(update, ctx)
+
+        mock_update_company.assert_called_once()
+        kwargs = mock_update_company.call_args.kwargs
+        self.assertEqual(kwargs["instruction_template_key"], "clinica")
+        self.assertIn("assistente virtual de uma clínica", kwargs["instrucoes"])
+
+    @patch("handlers.settings._obter_empresa_admin_ou_responder")
+    @patch("handlers.settings.atualizar_empresa", new_callable=AsyncMock)
+    async def test_limpa_template(self, mock_update_company, mock_admin):
+        from handlers.settings import cmd_template
+
+        mock_admin.return_value = make_empresa(instruction_template_key="clinica")
+        update = make_update()
+        ctx = make_context(args=["limpar"])
+        await cmd_template(update, ctx)
+
+        mock_update_company.assert_called_once_with(1, instruction_template_key=None)

@@ -10,9 +10,18 @@ class RateLimiter:
     entradas expiradas a cada chamada de verificação.
     """
 
-    def __init__(self, max_requests: int, window_seconds: int):
+    def __init__(
+        self,
+        max_requests: int,
+        window_seconds: int,
+        *,
+        label: str = "requisições",
+        guidance: str = "",
+    ):
         self._max_requests = max_requests
         self._window_seconds = window_seconds
+        self._label = label
+        self._guidance = guidance
         self._requests: dict[int, list[float]] = defaultdict(list)
 
     def permitir(self, user_id: int) -> bool:
@@ -43,16 +52,36 @@ class RateLimiter:
 
 # ── Limitadores globais ──
 # Mensagens para o agente: 20 por minuto por usuário
-limiter_mensagens = RateLimiter(max_requests=20, window_seconds=60)
+limiter_mensagens = RateLimiter(
+    max_requests=20,
+    window_seconds=60,
+    label="mensagens",
+    guidance="Dica: reúna sua dúvida em uma única mensagem para acelerar o atendimento.",
+)
 
 # Upload de documentos: 10 por minuto por usuário
-limiter_upload = RateLimiter(max_requests=10, window_seconds=60)
+limiter_upload = RateLimiter(
+    max_requests=10,
+    window_seconds=60,
+    label="envios de arquivos",
+    guidance="Espere a confirmação de cada arquivo antes de enviar o próximo.",
+)
 
 # Criação de FAQ: 20 por minuto por usuário
-limiter_faq = RateLimiter(max_requests=20, window_seconds=60)
+limiter_faq = RateLimiter(
+    max_requests=20,
+    window_seconds=60,
+    label="alterações de FAQ",
+    guidance="Aguarde um pouco antes de cadastrar, excluir ou limpar FAQs novamente.",
+)
 
 # Comandos gerais: 30 por minuto por usuário
-limiter_comandos = RateLimiter(max_requests=30, window_seconds=60)
+limiter_comandos = RateLimiter(
+    max_requests=30,
+    window_seconds=60,
+    label="comandos",
+    guidance="Evite repetir o mesmo comando várias vezes em sequência.",
+)
 
 
 def verificar_rate_limit(limiter: RateLimiter, user_id: int) -> str | None:
@@ -61,7 +90,10 @@ def verificar_rate_limit(limiter: RateLimiter, user_id: int) -> str | None:
         return None
 
     segundos = limiter.tempo_restante(user_id)
-    return (
-        f"⏳ Você está enviando requisições muito rápido. "
-        f"Aguarde {segundos} segundo(s) e tente novamente."
+    mensagem = (
+        f"⏳ Você atingiu o limite temporário de {limiter._label}. "
+        f"Aguarde {segundos} segundo(s) antes de tentar novamente."
     )
+    if limiter._guidance:
+        mensagem += f" {limiter._guidance}"
+    return mensagem

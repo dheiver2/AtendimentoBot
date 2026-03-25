@@ -14,6 +14,7 @@ class TelegramCommandsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("link", comandos)
         self.assertIn("upload", comandos)
         self.assertIn("reset", comandos)
+        self.assertIn("template", comandos)
         self.assertIn("meuid", comandos)
 
     def test_comandos_do_cliente_escondem_gestao(self):

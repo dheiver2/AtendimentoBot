@@ -5,6 +5,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import atualizar_empresa
+from instruction_templates import listar_templates_instrucao, obter_template_instrucao
 from validators import (
     InputValidationError,
     validar_fallback,
@@ -27,6 +28,32 @@ CAMPOS_EDITAVEIS = {
     "editar_saudacao": ("saudacao", "mensagem de saudação"),
     "editar_instrucoes": ("instrucoes", "instruções do bot"),
 }
+
+
+def _formatar_templates_instrucao(template_key_atual: str | None) -> str:
+    """Gera o texto compacto com os templates disponíveis para o admin."""
+    template_atual = obter_template_instrucao(template_key_atual)
+    linhas = [
+        "🧩 Templates de instruções disponíveis:",
+        "",
+        (
+            f"Atual: {template_atual.nome} ({template_atual.key})"
+            if template_atual
+            else "Atual: Personalizado"
+        ),
+        "",
+    ]
+    for template in listar_templates_instrucao():
+        linhas.append(f"- {template.key}: {template.nome} — {template.descricao}")
+    linhas.extend(
+        [
+            "",
+            "Use /template <slug> para aplicar um template.",
+            "Exemplo: /template clinica",
+            "Use /template limpar para manter as instruções atuais como personalizadas.",
+        ]
+    )
+    return "\n".join(linhas)
 
 
 async def _definir_status_agente(update: Update, context: ContextTypes.DEFAULT_TYPE, ativo: bool):
@@ -194,6 +221,48 @@ async def cmd_editar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return EDITANDO_CAMPO
+
+
+async def cmd_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lista e aplica templates de instruções por setor."""
+    mensagem = update.effective_message
+    empresa = await _obter_empresa_admin_ou_responder(update)
+    if not empresa:
+        return
+
+    args = context.args or []
+    if not args or args[0].lower() in {"listar", "lista"}:
+        await mensagem.reply_text(_formatar_templates_instrucao(empresa.get("instruction_template_key")))
+        return
+
+    acao = args[0].lower()
+    if acao in {"limpar", "personalizado"}:
+        await atualizar_empresa(empresa["id"], instruction_template_key=None)
+        await mensagem.reply_text(
+            "✅ O vínculo com o template foi removido.\n"
+            "Suas instruções atuais continuam salvas como personalizadas."
+        )
+        return
+
+    template_key = args[1] if acao in {"aplicar", "usar"} and len(args) > 1 else args[0]
+    template = obter_template_instrucao(template_key)
+    if not template:
+        await mensagem.reply_text(
+            "⚠️ Template não encontrado.\n\n"
+            + _formatar_templates_instrucao(empresa.get("instruction_template_key"))
+        )
+        return
+
+    await atualizar_empresa(
+        empresa["id"],
+        instrucoes=template.texto,
+        instruction_template_key=template.key,
+    )
+    await mensagem.reply_text(
+        f"✅ Template aplicado: {template.nome}\n\n"
+        f"{template.descricao}\n\n"
+        "Se quiser ajustar o texto depois, use /editar e altere as instruções."
+    )
 
 
 async def editar_campo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

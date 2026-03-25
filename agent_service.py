@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _FAQ_CACHE_TTL_SECONDS = 30
 
 FaqLoader = Callable[[int], Awaitable[list[dict]]]
-ConversaRegistrar = Callable[[int, int, str, str], Awaitable[None]]
+ConversaRegistrar = Callable[[int, int, str, str], Awaitable[object]]
 RateLimitChecker = Callable[[object, int], str | None]
 MessageValidator = Callable[[str], str]
 DocumentChecker = Callable[[int], bool]
@@ -38,6 +38,13 @@ RagResponder = Callable[[int, str, str, str, str], Awaitable[str]]
 class _FaqCacheEntry:
     expires_at: float
     items: list[dict]
+
+
+@dataclass(frozen=True)
+class AgentResponse:
+    text: str
+    conversation_id: int | None = None
+    decision: str = ""
 
 
 _faq_cache: dict[int, _FaqCacheEntry] = {}
@@ -151,6 +158,18 @@ def _registrar_conversa(
     task.add_done_callback(_log_task_exception)
 
 
+async def _registrar_conversa_sincrona(
+    empresa_id: int,
+    usuario_id: int,
+    pergunta: str,
+    resposta: str,
+    *,
+    registrar_conversa_fn: ConversaRegistrar,
+) -> int | None:
+    resultado = await registrar_conversa_fn(empresa_id, usuario_id, pergunta, resposta)
+    return resultado if isinstance(resultado, int) else None
+
+
 async def processar_pergunta(
     *,
     empresa: dict,
@@ -165,7 +184,8 @@ async def processar_pergunta(
     rag_responder: RagResponder = gerar_resposta,
     skip_rate_limit: bool = False,
     skip_validation: bool = False,
-) -> str:
+    return_context: bool = False,
+) -> str | AgentResponse:
     """Processa uma pergunta de um usuario e retorna a resposta final."""
     inicio = perf_counter()
 
@@ -175,6 +195,8 @@ async def processar_pergunta(
         rate_msg = rate_limit_checker(limiter_mensagens, usuario_id)
 
     if rate_msg:
+        if return_context:
+            return AgentResponse(rate_msg, decision="rate_limit")
         return rate_msg
 
     if skip_validation:
@@ -183,7 +205,10 @@ async def processar_pergunta(
         try:
             pergunta = message_validator(pergunta_bruta)
         except InputValidationError as exc:
-            return f"⚠️ {exc.message}"
+            resposta_validacao = f"⚠️ {exc.message}"
+            if return_context:
+                return AgentResponse(resposta_validacao, decision="validation")
+            return resposta_validacao
 
     faqs = await _obter_faqs_cacheadas(empresa["id"], faq_loader=faq_loader)
     tem_documentos = document_checker(empresa["id"])
@@ -206,13 +231,23 @@ async def processar_pergunta(
 
     if decisao.kind != "rag":
         resposta_imediata = decisao.answer or ""
-        _registrar_conversa(
-            empresa["id"],
-            usuario_id,
-            pergunta,
-            resposta_imediata,
-            registrar_conversa_fn=registrar_conversa_fn,
-        )
+        conversation_id: int | None = None
+        if return_context:
+            conversation_id = await _registrar_conversa_sincrona(
+                empresa["id"],
+                usuario_id,
+                pergunta,
+                resposta_imediata,
+                registrar_conversa_fn=registrar_conversa_fn,
+            )
+        else:
+            _registrar_conversa(
+                empresa["id"],
+                usuario_id,
+                pergunta,
+                resposta_imediata,
+                registrar_conversa_fn=registrar_conversa_fn,
+            )
         registrar_metrica_atendimento(
             empresa_id=empresa["id"],
             decisao=decisao.kind,
@@ -220,6 +255,12 @@ async def processar_pergunta(
             usou_rag=False,
             sucesso=True,
         )
+        if return_context:
+            return AgentResponse(
+                text=resposta_imediata,
+                conversation_id=conversation_id,
+                decision=decisao.kind,
+            )
         return resposta_imediata
 
     try:
@@ -242,13 +283,23 @@ async def processar_pergunta(
                 f"Se preferir, fale com a equipe em: {empresa['fallback_contato']}"
             )
 
-        _registrar_conversa(
-            empresa["id"],
-            usuario_id,
-            pergunta,
-            resposta,
-            registrar_conversa_fn=registrar_conversa_fn,
-        )
+        conversation_id = None
+        if return_context:
+            conversation_id = await _registrar_conversa_sincrona(
+                empresa["id"],
+                usuario_id,
+                pergunta,
+                resposta,
+                registrar_conversa_fn=registrar_conversa_fn,
+            )
+        else:
+            _registrar_conversa(
+                empresa["id"],
+                usuario_id,
+                pergunta,
+                resposta,
+                registrar_conversa_fn=registrar_conversa_fn,
+            )
         registrar_metrica_atendimento(
             empresa_id=empresa["id"],
             decisao=decisao.kind,
@@ -262,6 +313,12 @@ async def processar_pergunta(
             usuario_id,
             perf_counter() - inicio,
         )
+        if return_context:
+            return AgentResponse(
+                text=resposta,
+                conversation_id=conversation_id,
+                decision=decisao.kind,
+            )
         return resposta
     except VectorStoreIncompatibilityError as exc:
         logger.warning("Base vetorial incompatível para a empresa %s: %s", empresa["id"], exc)
@@ -272,7 +329,10 @@ async def processar_pergunta(
             usou_rag=True,
             sucesso=False,
         )
-        return str(exc)
+        resposta_incompatibilidade = str(exc)
+        if return_context:
+            return AgentResponse(resposta_incompatibilidade, decision="rag_incompatibility")
+        return resposta_incompatibilidade
     except TimeoutError:
         resposta_timeout = (
             "A consulta demorou mais do que o esperado. "
@@ -287,6 +347,8 @@ async def processar_pergunta(
             usou_rag=True,
             sucesso=False,
         )
+        if return_context:
+            return AgentResponse(resposta_timeout, decision="rag_timeout")
         return resposta_timeout
     except Exception as exc:
         logger.error("Erro ao gerar resposta: %s", exc, exc_info=True)
@@ -297,7 +359,10 @@ async def processar_pergunta(
             usou_rag=True,
             sucesso=False,
         )
-        return (
+        resposta_erro = (
             "Desculpe, ocorreu um erro ao processar sua pergunta. "
             "Tente novamente em alguns instantes."
         )
+        if return_context:
+            return AgentResponse(resposta_erro, decision="rag_error")
+        return resposta_erro

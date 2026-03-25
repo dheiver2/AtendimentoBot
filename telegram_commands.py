@@ -43,6 +43,7 @@ def obter_comandos_admin() -> list[BotCommand]:
         BotCommand("imagem", "Atualizar a imagem do agente"),
         BotCommand("pausar", "Pausar o agente"),
         BotCommand("ativar", "Ativar o agente"),
+        BotCommand("template", "Aplicar template por setor"),
         BotCommand("horario", "Definir horário de atendimento"),
         BotCommand("fallback", "Definir contato humano"),
         BotCommand("faq", "Gerenciar perguntas frequentes"),

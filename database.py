@@ -1,4 +1,6 @@
+import json
 import secrets
+from typing import Any
 
 import aiosqlite
 
@@ -56,6 +58,9 @@ async def _garantir_colunas_empresas(db: aiosqlite.Connection):
 
     if "admin_link_token" not in colunas:
         await db.execute("ALTER TABLE empresas ADD COLUMN admin_link_token TEXT")
+
+    if "instruction_template_key" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN instruction_template_key TEXT")
 
     colunas = await _obter_colunas_empresas(db)
     if "link_token" in colunas:
@@ -227,6 +232,7 @@ async def init_db():
                 nome_bot TEXT DEFAULT 'Assistente',
                 saudacao TEXT DEFAULT 'Olá! Como posso ajudar você hoje?',
                 instrucoes TEXT DEFAULT 'Você é um assistente de atendimento ao cliente. Responda de forma educada e profissional.',
+                instruction_template_key TEXT DEFAULT NULL,
                 ativo INTEGER NOT NULL DEFAULT 1,
                 horario_atendimento TEXT DEFAULT '',
                 fallback_contato TEXT DEFAULT '',
@@ -288,6 +294,39 @@ async def init_db():
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_metricas_atendimento_empresa_criado
             ON metricas_atendimento(empresa_id, criado_em)
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS feedback_respostas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversa_id INTEGER NOT NULL UNIQUE,
+                empresa_id INTEGER NOT NULL,
+                usuario_telegram_id INTEGER NOT NULL,
+                canal TEXT NOT NULL DEFAULT 'telegram',
+                resposta_bot TEXT NOT NULL DEFAULT '',
+                avaliacao INTEGER DEFAULT NULL,
+                comentario TEXT DEFAULT '',
+                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversa_id) REFERENCES conversas(id),
+                FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_feedback_respostas_empresa_criado
+            ON feedback_respostas(empresa_id, criado_em)
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+                sender TEXT PRIMARY KEY,
+                state TEXT DEFAULT NULL,
+                data_json TEXT NOT NULL DEFAULT '{}',
+                identidade_visual_enviada INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_updated_at
+            ON whatsapp_sessions(updated_at)
         """)
         await db.commit()
 
@@ -544,11 +583,14 @@ async def atualizar_empresa(empresa_id: int, **kwargs):
         "nome_bot",
         "saudacao",
         "instrucoes",
+        "instruction_template_key",
         "ativo",
         "horario_atendimento",
         "fallback_contato",
     }
     campos = {k: v for k, v in kwargs.items() if k in campos_permitidos}
+    if "instrucoes" in campos and "instruction_template_key" not in kwargs:
+        campos["instruction_template_key"] = None
     if not campos:
         return
     set_clause = ", ".join(f"{k} = ?" for k in campos)
@@ -625,14 +667,166 @@ async def excluir_documento(empresa_id: int, documento_id: int) -> bool:
         return bool(cursor.rowcount > 0)
 
 
-async def registrar_conversa(empresa_id: int, usuario_telegram_id: int, mensagem: str, resposta: str):
+async def registrar_conversa(
+    empresa_id: int,
+    usuario_telegram_id: int,
+    mensagem: str,
+    resposta: str,
+) -> int:
     """Registra uma conversa no histórico."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+        cursor = await db.execute(
             "INSERT INTO conversas (empresa_id, usuario_telegram_id, mensagem_usuario, resposta_bot) VALUES (?, ?, ?, ?)",
             (empresa_id, usuario_telegram_id, mensagem, resposta),
         )
         await db.commit()
+        return _coerce_lastrowid(cursor.lastrowid)
+
+
+async def criar_feedback_resposta(
+    conversa_id: int,
+    empresa_id: int,
+    usuario_telegram_id: int,
+    *,
+    canal: str,
+    resposta_bot: str,
+) -> int:
+    """Cria o registro de feedback associado a uma resposta do bot."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT OR IGNORE INTO feedback_respostas (
+                conversa_id,
+                empresa_id,
+                usuario_telegram_id,
+                canal,
+                resposta_bot
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (conversa_id, empresa_id, usuario_telegram_id, canal, resposta_bot),
+        )
+        await db.commit()
+        if cursor.rowcount and cursor.lastrowid is not None:
+            return _coerce_lastrowid(cursor.lastrowid)
+
+        cursor = await db.execute(
+            "SELECT id FROM feedback_respostas WHERE conversa_id = ?",
+            (conversa_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise RuntimeError("Falha ao obter o feedback persistido.")
+        return int(row[0])
+
+
+async def registrar_feedback_resposta(
+    feedback_id: int,
+    avaliacao: int,
+    comentario: str = "",
+) -> bool:
+    """Registra o feedback positivo/negativo da resposta, apenas uma vez."""
+    if avaliacao not in {-1, 1}:
+        raise ValueError("Avaliacao invalida. Use 1 para positivo ou -1 para negativo.")
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            UPDATE feedback_respostas
+            SET avaliacao = ?,
+                comentario = ?,
+                atualizado_em = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND avaliacao IS NULL
+            """,
+            (avaliacao, comentario, feedback_id),
+        )
+        await db.commit()
+        return bool(cursor.rowcount > 0)
+
+
+async def obter_feedback_resposta(feedback_id: int) -> dict | None:
+    """Busca um feedback específico pelo ID interno."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM feedback_respostas WHERE id = ?",
+            (feedback_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def salvar_sessao_whatsapp(
+    sender: str,
+    *,
+    state: str | None,
+    data: dict[str, Any],
+    identidade_visual_enviada: bool,
+    updated_at: float,
+) -> None:
+    """Persiste a sessão conversacional do WhatsApp para sobreviver a reinícios."""
+    payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO whatsapp_sessions (
+                sender,
+                state,
+                data_json,
+                identidade_visual_enviada,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(sender) DO UPDATE SET
+                state = excluded.state,
+                data_json = excluded.data_json,
+                identidade_visual_enviada = excluded.identidade_visual_enviada,
+                updated_at = excluded.updated_at
+            """,
+            (sender, state, payload, int(identidade_visual_enviada), updated_at),
+        )
+        await db.commit()
+
+
+async def obter_sessao_whatsapp(sender: str) -> dict | None:
+    """Carrega uma sessão persistida do WhatsApp."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM whatsapp_sessions WHERE sender = ?",
+            (sender,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        sessao = dict(row)
+        try:
+            sessao["data"] = json.loads(sessao.pop("data_json") or "{}")
+        except json.JSONDecodeError:
+            sessao["data"] = {}
+        return sessao
+
+
+async def remover_sessao_whatsapp(sender: str) -> bool:
+    """Remove uma sessão persistida do WhatsApp."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM whatsapp_sessions WHERE sender = ?",
+            (sender,),
+        )
+        await db.commit()
+        return bool(cursor.rowcount > 0)
+
+
+async def limpar_sessoes_whatsapp_expiradas(updated_before: float) -> int:
+    """Limpa sessões persistidas que já passaram do TTL configurado."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM whatsapp_sessions WHERE updated_at < ?",
+            (updated_before,),
+        )
+        await db.commit()
+        return int(cursor.rowcount)
 
 
 async def registrar_metrica_atendimento_db(
@@ -741,6 +935,7 @@ async def excluir_empresa_com_dados(empresa_id: int):
     """Remove empresa, documentos e histórico associados."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM metricas_atendimento WHERE empresa_id = ?", (empresa_id,))
+        await db.execute("DELETE FROM feedback_respostas WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM conversas WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM faqs WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM documentos WHERE empresa_id = ?", (empresa_id,))

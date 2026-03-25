@@ -26,6 +26,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             nome_bot="Ana",
             saudacao="Oi",
             instrucoes="Seja objetiva",
+            instruction_template_key="clinica",
             ativo=0,
             horario_atendimento="Seg a Sex, 08h às 18h",
             fallback_contato="WhatsApp (11) 99999-9999",
@@ -39,11 +40,26 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empresa["nome_bot"], "Ana")
         self.assertEqual(empresa["saudacao"], "Oi")
         self.assertEqual(empresa["instrucoes"], "Seja objetiva")
+        self.assertEqual(empresa["instruction_template_key"], "clinica")
         self.assertEqual(empresa["ativo"], 0)
         self.assertEqual(empresa["horario_atendimento"], "Seg a Sex, 08h às 18h")
         self.assertEqual(empresa["fallback_contato"], "WhatsApp (11) 99999-9999")
         self.assertTrue(empresa["link_token"])
         self.assertTrue(empresa["admin_link_token"])
+
+    async def test_edicao_manual_de_instrucoes_remove_template_associado(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+        await database.atualizar_empresa(
+            empresa_id,
+            instrucoes="Template inicial",
+            instruction_template_key="clinica",
+        )
+
+        await database.atualizar_empresa(empresa_id, instrucoes="Instruções personalizadas")
+
+        empresa = await database.obter_empresa_por_admin(12345)
+        self.assertEqual(empresa["instrucoes"], "Instruções personalizadas")
+        self.assertIsNone(empresa["instruction_template_key"])
 
     async def test_vincula_cliente_e_resolve_empresa_por_link(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
@@ -146,7 +162,14 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_exclui_documento_e_empresa_com_dados(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
         documento_id = await database.registrar_documento(empresa_id, "base.txt")
-        await database.registrar_conversa(empresa_id, 999, "Oi", "Olá")
+        conversa_id = await database.registrar_conversa(empresa_id, 999, "Oi", "Olá")
+        await database.criar_feedback_resposta(
+            conversa_id,
+            empresa_id,
+            999,
+            canal="telegram",
+            resposta_bot="Olá",
+        )
         await database.criar_faq(empresa_id, "Qual o horário?", "Seg a Sex")
         await database.vincular_cliente_empresa(empresa_id, 777)
 
@@ -212,3 +235,55 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metricas[0]["tipo"], "rag")
         self.assertEqual(metricas[1]["tipo"], "atendimento")
         self.assertEqual(metricas[1]["decisao"], "faq")
+
+    async def test_cria_e_registra_feedback_de_resposta(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+        conversa_id = await database.registrar_conversa(empresa_id, 999, "Oi", "Olá")
+
+        feedback_id = await database.criar_feedback_resposta(
+            conversa_id,
+            empresa_id,
+            999,
+            canal="telegram",
+            resposta_bot="Olá",
+        )
+        salvo = await database.registrar_feedback_resposta(feedback_id, 1)
+        feedback = await database.obter_feedback_resposta(feedback_id)
+
+        self.assertTrue(salvo)
+        self.assertIsNotNone(feedback)
+        self.assertEqual(feedback["empresa_id"], empresa_id)
+        self.assertEqual(feedback["usuario_telegram_id"], 999)
+        self.assertEqual(feedback["canal"], "telegram")
+        self.assertEqual(feedback["avaliacao"], 1)
+
+    async def test_persistencia_de_sessao_whatsapp(self):
+        await database.salvar_sessao_whatsapp(
+            "5511999999999@c.us",
+            state="faq_pergunta",
+            data={"faq_pergunta": "Qual o horario?", "pending_feedback_id": 7},
+            identidade_visual_enviada=True,
+            updated_at=123.45,
+        )
+
+        sessao = await database.obter_sessao_whatsapp("5511999999999@c.us")
+
+        self.assertIsNotNone(sessao)
+        self.assertEqual(sessao["state"], "faq_pergunta")
+        self.assertEqual(sessao["data"]["faq_pergunta"], "Qual o horario?")
+        self.assertEqual(sessao["data"]["pending_feedback_id"], 7)
+        self.assertEqual(sessao["identidade_visual_enviada"], 1)
+
+    async def test_limpa_sessao_whatsapp_expirada(self):
+        await database.salvar_sessao_whatsapp(
+            "5511999999999@c.us",
+            state=None,
+            data={},
+            identidade_visual_enviada=False,
+            updated_at=10.0,
+        )
+        removidas = await database.limpar_sessoes_whatsapp_expiradas(20.0)
+        sessao = await database.obter_sessao_whatsapp("5511999999999@c.us")
+
+        self.assertEqual(removidas, 1)
+        self.assertIsNone(sessao)

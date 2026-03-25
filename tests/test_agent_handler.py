@@ -1,6 +1,7 @@
 """Testes para handlers/agent.py — interação com o agente RAG."""
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tests.helpers import make_context, make_empresa, make_update
@@ -253,6 +254,40 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("R$50", resposta)
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="preço do produto?")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    @patch("handlers.agent.criar_feedback_resposta", new_callable=AsyncMock, return_value=55)
+    async def test_resposta_com_contexto_expoe_botoes_de_feedback(
+        self,
+        mock_feedback,
+        mock_emp,
+        mock_val,
+        mock_rate,
+    ):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("preço do produto?")
+        ctx = make_context()
+
+        with patch(
+            "handlers.agent.processar_pergunta",
+            new_callable=AsyncMock,
+            return_value=SimpleNamespace(text="O produto custa R$50", conversation_id=99),
+        ):
+            await interagir_com_agente(update, ctx)
+
+        mock_feedback.assert_awaited_once_with(
+            99,
+            1,
+            100,
+            canal="telegram",
+            resposta_bot="O produto custa R$50",
+        )
+        kwargs = update.message.reply_text.call_args.kwargs
+        self.assertIsNotNone(kwargs["reply_markup"])
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="pergunta qualquer")
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.listar_faqs", return_value=[])
@@ -316,3 +351,17 @@ class ResponderERegistrarTests(unittest.IsolatedAsyncioTestCase):
         await _responder_e_registrar(update, empresa, "Oi", "Olá!")
         update.message.reply_text.assert_called_once_with("Olá!")
         mock_reg.assert_called_once_with(empresa["id"], update.effective_user.id, "Oi", "Olá!")
+
+
+class FeedbackRespostaCallbackTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.agent.registrar_feedback_resposta", new_callable=AsyncMock, return_value=True)
+    async def test_registra_feedback_e_remove_botoes(self, mock_feedback):
+        from handlers.agent import feedback_resposta_callback
+
+        update = make_update(callback_data="feedback:up:42")
+        ctx = make_context()
+        await feedback_resposta_callback(update, ctx)
+
+        mock_feedback.assert_awaited_once_with(42, 1)
+        update.callback_query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+        update.callback_query.answer.assert_awaited_once()

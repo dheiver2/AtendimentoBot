@@ -61,6 +61,7 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("/painel", texto)
         self.assertIn("/meuid", texto)
+        self.assertIn("/template", texto)
 
     @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
     @patch("handlers.panel.obter_empresa_do_cliente")

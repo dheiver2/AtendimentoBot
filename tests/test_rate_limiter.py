@@ -58,10 +58,16 @@ class VerificarRateLimitTests(unittest.TestCase):
         self.assertIsNone(resultado)
 
     def test_retorna_mensagem_quando_bloqueado(self):
-        limiter = RateLimiter(max_requests=1, window_seconds=60)
+        limiter = RateLimiter(
+            max_requests=1,
+            window_seconds=60,
+            label="mensagens",
+            guidance="Dica: reúna sua dúvida em uma única mensagem.",
+        )
         limiter.permitir(1)
 
         resultado = verificar_rate_limit(limiter, 1)
         self.assertIsNotNone(resultado)
-        self.assertIn("muito rápido", resultado)
+        self.assertIn("limite temporário de mensagens", resultado)
         self.assertIn("segundo", resultado)
+        self.assertIn("Dica", resultado)

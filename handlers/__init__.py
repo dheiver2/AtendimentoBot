@@ -7,7 +7,7 @@ from telegram.ext import (
     filters,
 )
 
-from .agent import interagir_com_agente
+from .agent import feedback_resposta_callback, interagir_com_agente
 from .common import (
     AGUARDANDO_CONFIRMACAO_REGISTRO,
     AGUARDANDO_CONFIRMACAO_RESET,
@@ -87,6 +87,7 @@ from .settings import (
     cmd_fallback,
     cmd_horario,
     cmd_pausar,
+    cmd_template,
     editar_campo_callback,
     receber_fallback,
     receber_horario,
@@ -201,7 +202,9 @@ def get_handlers() -> list:
         CommandHandler("status", cmd_status),
         CommandHandler("pausar", cmd_pausar),
         CommandHandler("ativar", cmd_ativar),
+        CommandHandler("template", cmd_template),
         CommandHandler("sair", cmd_sair),
+        CallbackQueryHandler(feedback_resposta_callback, pattern=r"^feedback:(up|down):\d+$"),
         CallbackQueryHandler(painel_refresh_callback, pattern="^painel_refresh$"),
         CallbackQueryHandler(painel_documentos_callback, pattern="^painel_documentos$"),
         CallbackQueryHandler(painel_status_callback, pattern="^painel_status$"),

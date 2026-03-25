@@ -14,6 +14,7 @@ from database import (
     obter_empresa_por_admin,
 )
 from document_processor import listar_formatos_suportados
+from instruction_templates import obter_template_instrucao
 from metrics import obter_resumo_metricas_empresa
 from vector_store import empresa_tem_documentos
 
@@ -88,11 +89,14 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     horario_texto = "Configurado" if empresa.get("horario_atendimento") else "Não configurado"
     fallback_texto = "Configurado" if empresa.get("fallback_contato") else "Não configurado"
     atendimento_texto = "Ativo" if agente_ativo else "Pausado"
+    template = obter_template_instrucao(empresa.get("instruction_template_key"))
+    template_texto = template.nome if template else "Personalizado"
 
     texto = (
         f"📊 Painel — {empresa['nome']}\n\n"
         f"🤖 Assistente: {empresa['nome_bot']}\n"
         f"👋 Saudação: {empresa['saudacao']}\n"
+        f"🧩 Template: {template_texto}\n"
         f"⏱️ Atendimento: {atendimento_texto}\n"
         f"🖼️ Imagem: {imagem_texto}\n"
         f"🕒 Horário: {horario_texto}\n"
@@ -134,6 +138,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/imagem — Atualizar a imagem do agente\n"
             "/pausar — Pausar o agente\n"
             "/ativar — Reativar o agente\n"
+            "/template — Aplicar template de instruções por setor\n"
             "/horario — Configurar horário de atendimento\n"
             "/fallback — Configurar contato humano de fallback\n"
             "/faq — Gerenciar perguntas frequentes\n"

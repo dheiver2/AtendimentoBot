@@ -35,6 +35,7 @@ def make_update(text="", user_id=100, callback_data=None):
         query.data = callback_data
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
         query.message = make_message(text, user_id)
         update.callback_query = query
     else:
@@ -62,6 +63,7 @@ def make_empresa(empresa_id=1, nome="Acme Corp", ativo=1, **kwargs):
         "nome_bot": kwargs.get("nome_bot", "Ana"),
         "saudacao": kwargs.get("saudacao", "Olá!"),
         "instrucoes": kwargs.get("instrucoes", "Seja educada"),
+        "instruction_template_key": kwargs.get("instruction_template_key"),
         "ativo": ativo,
         "link_token": kwargs.get("link_token", "abc123"),
         "admin_link_token": kwargs.get("admin_link_token", "adm123"),

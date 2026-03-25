@@ -7,7 +7,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field
-from time import monotonic
+from time import time
 from typing import Any, Awaitable, Callable
 
 from agent_service import invalidar_cache_faq, processar_pergunta
@@ -23,11 +23,13 @@ from database import (
     atualizar_empresa,
     contar_clientes_empresa,
     criar_empresa,
+    criar_feedback_resposta,
     criar_faq,
     desvincular_cliente,
     excluir_documento,
     excluir_empresa_com_dados,
     excluir_faq,
+    limpar_sessoes_whatsapp_expiradas,
     limpar_faqs,
     listar_documentos,
     listar_empresas,
@@ -39,8 +41,12 @@ from database import (
     obter_empresa_por_admin_link_token,
     obter_empresa_por_id,
     obter_empresa_por_link_token,
+    obter_sessao_whatsapp,
     registrar_conversa,
     registrar_documento,
+    registrar_feedback_resposta,
+    remover_sessao_whatsapp,
+    salvar_sessao_whatsapp,
     vincular_cliente_empresa,
 )
 from document_processor import (
@@ -55,6 +61,7 @@ from handlers.common import (
     _gerar_capa_empresa,
     _montar_texto_boas_vindas_cliente,
 )
+from instruction_templates import listar_templates_instrucao, obter_template_instrucao
 from metrics import obter_resumo_metricas_empresa
 from rag_chain import gerar_resposta
 from rate_limiter import (
@@ -87,6 +94,7 @@ _DEFAULT_INSTRUCOES = (
     "Responda de forma educada e profissional."
 )
 _SESSION_TTL_SECONDS = 24 * 60 * 60
+_FEEDBACK_PROMPT = "👍👎 Essa resposta ajudou? Responda com um desses emojis."
 
 _STATE_ONBOARDING_NOME_EMPRESA = "onboarding_nome_empresa"
 _STATE_ONBOARDING_NOME_BOT = "onboarding_nome_bot"
@@ -130,7 +138,7 @@ class WhatsAppSession:
     state: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
     identidade_visual_enviada: bool = False
-    updated_at: float = field(default_factory=monotonic)
+    updated_at: float = field(default_factory=time)
 
 
 _sessions: dict[str, WhatsAppSession] = {}
@@ -176,7 +184,7 @@ def _usa_bootstrap_owner_chat_padrao(*, is_owner_chat: bool) -> bool:
 
 
 def _touch_session(sender: str) -> WhatsAppSession:
-    now = monotonic()
+    now = time()
     expirados = [
         chave
         for chave, sessao in _sessions.items()
@@ -195,7 +203,124 @@ def _clear_session(session: WhatsAppSession, *, keep_identity: bool = True) -> N
     session.state = None
     session.data.clear()
     session.identidade_visual_enviada = identidade
-    session.updated_at = monotonic()
+    session.updated_at = time()
+
+
+def _extrair_resposta_e_conversa_id(resultado: object) -> tuple[str, int | None]:
+    if isinstance(resultado, str):
+        return resultado, None
+
+    texto = getattr(resultado, "text", None)
+    conversa_id = getattr(resultado, "conversation_id", None)
+    if isinstance(texto, str):
+        return texto, conversa_id if isinstance(conversa_id, int) else None
+    return str(resultado), None
+
+
+def _feedback_pendente(session: WhatsAppSession) -> int | None:
+    valor = session.data.get("pending_feedback_id")
+    return valor if isinstance(valor, int) else None
+
+
+def _definir_feedback_pendente(session: WhatsAppSession, feedback_id: int | None) -> None:
+    if feedback_id is None:
+        session.data.pop("pending_feedback_id", None)
+        return
+    session.data["pending_feedback_id"] = feedback_id
+
+
+def _extrair_avaliacao_feedback(text: str) -> int | None:
+    texto = (text or "").strip().replace("\ufe0f", "")
+    if texto == "👍":
+        return 1
+    if texto == "👎":
+        return -1
+    return None
+
+
+def _sessao_precisa_persistir(session: WhatsAppSession) -> bool:
+    return bool(session.state or session.data or session.identidade_visual_enviada)
+
+
+async def _restaurar_sessao(sender: str) -> WhatsAppSession:
+    now = time()
+    cutoff = now - _SESSION_TTL_SECONDS
+    await limpar_sessoes_whatsapp_expiradas(cutoff)
+
+    expirados = [
+        chave
+        for chave, sessao in _sessions.items()
+        if now - sessao.updated_at > _SESSION_TTL_SECONDS
+    ]
+    for chave in expirados:
+        _sessions.pop(chave, None)
+
+    session = _sessions.get(sender)
+    if session:
+        session.updated_at = now
+        return session
+
+    persisted = await obter_sessao_whatsapp(sender)
+    if persisted:
+        updated_at = float(persisted.get("updated_at") or 0.0)
+        if now - updated_at <= _SESSION_TTL_SECONDS:
+            session = WhatsAppSession(
+                state=persisted.get("state"),
+                data=(
+                    persisted.get("data")
+                    if isinstance(persisted.get("data"), dict)
+                    else {}
+                ),
+                identidade_visual_enviada=bool(persisted.get("identidade_visual_enviada")),
+                updated_at=now,
+            )
+            _sessions[sender] = session
+            return session
+        await remover_sessao_whatsapp(sender)
+
+    return _touch_session(sender)
+
+
+async def _persistir_sessao(sender: str, session: WhatsAppSession) -> None:
+    session.updated_at = time()
+    if _sessao_precisa_persistir(session):
+        await salvar_sessao_whatsapp(
+            sender,
+            state=session.state,
+            data=session.data,
+            identidade_visual_enviada=session.identidade_visual_enviada,
+            updated_at=session.updated_at,
+        )
+        _sessions[sender] = session
+        return
+
+    _sessions.pop(sender, None)
+    await remover_sessao_whatsapp(sender)
+
+
+def _formatar_templates_instrucao(template_key_atual: str | None) -> str:
+    template_atual = obter_template_instrucao(template_key_atual)
+    linhas = [
+        "🧩 Templates de instrucoes disponiveis:",
+        "",
+        (
+            f"Atual: {template_atual.nome} ({template_atual.key})"
+            if template_atual
+            else "Atual: Personalizado"
+        ),
+        "",
+    ]
+    for template in listar_templates_instrucao():
+        linhas.append(f"- {template.key}: {template.nome} - {template.descricao}")
+    linhas.extend(
+        [
+            "",
+            "Use /template <slug> para aplicar um template.",
+            "Exemplo: /template clinica",
+            "Use /template limpar para manter as instrucoes atuais como personalizadas.",
+        ]
+    )
+    return "\n".join(linhas)
 
 
 def _make_text_action(text: str) -> dict[str, str]:
@@ -729,6 +854,7 @@ async def _handle_state_message(
                 "🎉 Empresa cadastrada com sucesso.\n\n"
                 "Agora envie seus documentos neste chat ou use /upload para entrar no modo guiado.\n"
                 "Use /link quando quiser gerar o acesso dos clientes.\n"
+                "Use /template para aplicar instrucoes por setor.\n"
                 f"Formatos aceitos: {listar_formatos_suportados()}.\n"
                 "Se quiser, use /imagem para definir a imagem do agente."
             )
@@ -1003,6 +1129,7 @@ async def _cmd_start(
                 f"👋 Sua configuracao para {empresa_admin['nome']} ja esta ativa.\n\n"
                 "Use /painel para gerenciar o agente.\n"
                 "Use /link para gerar os acessos de admin e cliente.\n"
+                "Use /template para aplicar instrucoes por setor.\n"
                 "Use /ajuda para ver os comandos.\n"
                 f"{dica_teste}"
             )
@@ -1118,6 +1245,7 @@ async def _cmd_ajuda(
             "/imagem - Atualizar a imagem do agente\n"
             "/pausar - Pausar o agente\n"
             "/ativar - Reativar o agente\n"
+            "/template - Aplicar template de instrucoes por setor\n"
             "/horario - Configurar horario de atendimento\n"
             "/fallback - Configurar contato humano\n"
             "/faq - Gerenciar perguntas frequentes\n"
@@ -1312,6 +1440,8 @@ async def _cmd_painel(*, user_id: int) -> list[dict[str, str]]:
     tem_docs = empresa_tem_documentos(empresa["id"])
     tem_imagem = empresa_tem_imagem(empresa["id"])
     agente_ativo = bool(empresa.get("ativo", 1))
+    template = obter_template_instrucao(empresa.get("instruction_template_key"))
+    template_texto = template.nome if template else "Personalizado"
 
     if not agente_ativo:
         status_emoji = "⏸️"
@@ -1328,6 +1458,7 @@ async def _cmd_painel(*, user_id: int) -> list[dict[str, str]]:
             f"📊 Painel - {empresa['nome']}\n\n"
             f"🤖 Assistente: {empresa['nome_bot']}\n"
             f"👋 Saudacao: {empresa['saudacao']}\n"
+            f"🧩 Template: {template_texto}\n"
             f"⏱️ Atendimento: {'Ativo' if agente_ativo else 'Pausado'}\n"
             f"🖼️ Imagem: {'Configurada' if tem_imagem else 'Nao configurada'}\n"
             f"🕒 Horario: {'Configurado' if empresa.get('horario_atendimento') else 'Nao configurado'}\n"
@@ -1337,7 +1468,7 @@ async def _cmd_painel(*, user_id: int) -> list[dict[str, str]]:
             f"📄 Documentos: {len(docs)}\n"
             f"{status_emoji} Status: {status_texto}\n\n"
             "Comandos uteis:\n"
-            "/upload, /documentos, /imagem, /faq, /horario, /fallback, /editar, /status, /link"
+            "/upload, /documentos, /imagem, /faq, /template, /horario, /fallback, /editar, /status, /link"
         )
     ]
 
@@ -1486,6 +1617,51 @@ async def _cmd_fallback(*, user_id: int, args: list[str], session: WhatsAppSessi
             "Envie o contato de fallback.\n"
             "Exemplo: WhatsApp (11) 99999-9999 ou suporte@empresa.com.\n"
             "Se quiser remover, use /fallback limpar."
+        )
+    ]
+
+
+async def _cmd_template(*, user_id: int, args: list[str]) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if not args or args[0].lower() in {"listar", "lista"}:
+        return [_make_text_action(_formatar_templates_instrucao(empresa.get("instruction_template_key")))]
+
+    acao = args[0].lower()
+    if acao in {"limpar", "personalizado"}:
+        await atualizar_empresa(empresa["id"], instruction_template_key=None)
+        return [
+            _make_text_action(
+                "✅ O vinculo com o template foi removido.\n"
+                "Suas instrucoes atuais continuam salvas como personalizadas."
+            )
+        ]
+
+    template_key = args[1] if acao in {"aplicar", "usar"} and len(args) > 1 else args[0]
+    template = obter_template_instrucao(template_key)
+    if not template:
+        return [
+            _make_text_action(
+                "⚠️ Template nao encontrado.\n\n"
+                + _formatar_templates_instrucao(empresa.get("instruction_template_key"))
+            )
+        ]
+
+    await atualizar_empresa(
+        empresa["id"],
+        instrucoes=template.texto,
+        instruction_template_key=template.key,
+    )
+    return [
+        _make_text_action(
+            f"✅ Template aplicado: {template.nome}\n\n"
+            f"{template.descricao}\n\n"
+            "Se quiser ajustar o texto depois, use /editar e altere as instrucoes."
         )
     ]
 
@@ -1803,7 +1979,7 @@ async def _processar_interacao_agente(
     except InputValidationError as exc:
         return [_make_text_action(f"⚠️ {exc.message}")]
 
-    resposta = await processar_pergunta(
+    resultado = await processar_pergunta(
         empresa=empresa,
         pergunta_bruta=pergunta,
         usuario_id=user_id,
@@ -1816,13 +1992,28 @@ async def _processar_interacao_agente(
         rag_responder=gerar_resposta,
         skip_rate_limit=True,
         skip_validation=True,
+        return_context=True,
     )
-    return [_make_text_action(resposta)]
+    resposta, conversa_id = _extrair_resposta_e_conversa_id(resultado)
+    if conversa_id is None:
+        _definir_feedback_pendente(session, None)
+        return [_make_text_action(resposta)]
+
+    feedback_id = await criar_feedback_resposta(
+        conversa_id,
+        empresa["id"],
+        user_id,
+        canal="whatsapp",
+        resposta_bot=resposta,
+    )
+    _definir_feedback_pendente(session, feedback_id)
+    return [_make_text_action(f"{resposta}\n\n{_FEEDBACK_PROMPT}")]
 
 
-async def processar_mensagem_whatsapp(
+async def _processar_mensagem_whatsapp_inner(
     *,
     sender: str,
+    session: WhatsAppSession,
     text: str,
     message_type: str,
     is_owner_chat: bool = False,
@@ -1832,7 +2023,6 @@ async def processar_mensagem_whatsapp(
     resolve_default_company: DefaultCompanyResolver,
     share_link_builder: ShareLinkBuilder | None = None,
 ) -> list[dict[str, str]]:
-    session = _touch_session(sender)
     user_id = _coerce_whatsapp_user_id(sender)
     texto = (text or "").strip()
     comando, args = _parse_command(texto)
@@ -1939,6 +2129,8 @@ async def processar_mensagem_whatsapp(
             return await _cmd_pausar_ativar(user_id=user_id, ativo=False)
         if comando == "ativar":
             return await _cmd_pausar_ativar(user_id=user_id, ativo=True)
+        if comando == "template":
+            return await _cmd_template(user_id=user_id, args=args)
         if comando == "horario":
             return await _cmd_horario(user_id=user_id, args=args, session=session)
         if comando == "fallback":
@@ -1978,6 +2170,20 @@ async def processar_mensagem_whatsapp(
     if state_result is not None:
         return state_result
 
+    feedback = _extrair_avaliacao_feedback(texto)
+    if session.state is None and feedback is not None:
+        feedback_id = _feedback_pendente(session)
+        if feedback_id is not None:
+            _definir_feedback_pendente(session, None)
+            salvo = await registrar_feedback_resposta(feedback_id, feedback)
+            return [
+                _make_text_action(
+                    "✅ Obrigado pelo feedback. Vou usar isso para melhorar as proximas respostas."
+                    if salvo
+                    else "ℹ️ Esse feedback ja tinha sido registrado."
+                )
+            ]
+
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = None if empresa_admin else await obter_empresa_do_cliente(user_id)
     pode_iniciar_admin_sem_link = _pode_iniciar_admin_sem_link(
@@ -2015,3 +2221,33 @@ async def processar_mensagem_whatsapp(
         resolve_default_company=resolve_default_company,
         auto_bind_default_company=not pode_iniciar_admin_sem_link,
     )
+
+
+async def processar_mensagem_whatsapp(
+    *,
+    sender: str,
+    text: str,
+    message_type: str,
+    is_owner_chat: bool = False,
+    mime_type: str = "",
+    file_name: str = "",
+    media_bytes: bytes | None = None,
+    resolve_default_company: DefaultCompanyResolver,
+    share_link_builder: ShareLinkBuilder | None = None,
+) -> list[dict[str, str]]:
+    session = await _restaurar_sessao(sender)
+    try:
+        return await _processar_mensagem_whatsapp_inner(
+            sender=sender,
+            session=session,
+            text=text,
+            message_type=message_type,
+            is_owner_chat=is_owner_chat,
+            mime_type=mime_type,
+            file_name=file_name,
+            media_bytes=media_bytes,
+            resolve_default_company=resolve_default_company,
+            share_link_builder=share_link_builder,
+        )
+    finally:
+        await _persistir_sessao(sender, session)

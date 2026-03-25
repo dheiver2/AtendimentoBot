@@ -152,6 +152,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👋 Sua configuração para {empresa_admin['nome']} já está ativa.\n\n"
             f"Use /painel para gerenciar o agente.\n"
             f"Use /link para gerar os links de admin e cliente.\n"
+            f"Use /template para aplicar instruções por setor.\n"
             f"Use o Menu do Telegram ou /ajuda para ver os comandos.\n"
             f"{dica_teste}",
         )
@@ -381,6 +382,7 @@ async def confirmar_registro_callback(update: Update, context: ContextTypes.DEFA
         f"🎉 Empresa cadastrada com sucesso!\n\n"
         f"Agora envie seus documentos neste chat ou use /upload para iniciar o envio guiado.\n"
         "Use /link quando quiser gerar o link dos seus clientes.\n"
+        "Use /template para aplicar um modelo de instruções por setor.\n"
         f"Formatos aceitos: {formatos}.\n"
         "Se quiser, use /imagem para definir a imagem do seu agente.",
     )
