@@ -8,6 +8,12 @@ require("dotenv").config({ path: path.resolve(__dirname, "..", ".env") });
 
 const qrcode = require("qrcode-terminal");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const {
+  getMessageId,
+  normalizeWidSerialized,
+  rememberSentMessage,
+  shouldIgnoreMessage,
+} = require("./whatsapp_bridge_helpers");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DEFAULT_SESSION_DIR = path.join(ROOT_DIR, "data", "whatsapp-web-session");
@@ -64,6 +70,7 @@ let state = "starting";
 let lastError = "";
 let lastQrAt = null;
 let lastReadyAt = null;
+const sentMessageIds = new Map();
 
 function statusPayload() {
   return {
@@ -112,9 +119,20 @@ const client = new Client({
 });
 
 async function buildPayload(message) {
+  let sender = String(message.from || "").trim();
+  try {
+    const chat = typeof message.getChat === "function" ? await message.getChat() : null;
+    const chatId = normalizeWidSerialized(chat?.id);
+    if (chatId) {
+      sender = chatId;
+    }
+  } catch (_error) {
+    // Mantem o sender original quando o chat nao puder ser resolvido.
+  }
+
   const payload = {
-    sender: message.from,
-    message_id: message.id?._serialized || "",
+    sender,
+    message_id: getMessageId(message),
     text: String(message.body || "").trim(),
     message_type: String(message.type || "chat"),
     mime_type: "",
@@ -153,7 +171,10 @@ async function sendActions(message, actions) {
       if (!text) {
         continue;
       }
-      await chat.sendMessage(text, { quotedMessageId: message.id?._serialized || undefined });
+      const sentMessage = await chat.sendMessage(text, {
+        quotedMessageId: getMessageId(message) || undefined,
+      });
+      rememberSentMessage(sentMessageIds, sentMessage);
       continue;
     }
 
@@ -168,27 +189,25 @@ async function sendActions(message, actions) {
         mediaBase64,
         String(action.filename || "imagem.jpg"),
       );
-      await chat.sendMessage(media, {
+      const sentMessage = await chat.sendMessage(media, {
         caption: String(action.caption || ""),
-        quotedMessageId: message.id?._serialized || undefined,
+        quotedMessageId: getMessageId(message) || undefined,
       });
+      rememberSentMessage(sentMessageIds, sentMessage);
     }
   }
 }
 
 async function replyUnsupported(message) {
   try {
-    await message.reply("No momento eu consigo responder apenas mensagens de texto.");
+    const sentMessage = await message.reply("No momento eu consigo responder apenas mensagens de texto.");
+    rememberSentMessage(sentMessageIds, sentMessage);
   } catch (error) {
     console.error("Falha ao responder mensagem nao suportada:", error);
   }
 }
 
 async function onMessage(message) {
-  if (message.fromMe) {
-    return;
-  }
-
   if (!message.from || message.from === "status@broadcast") {
     return;
   }
@@ -198,6 +217,10 @@ async function onMessage(message) {
     || message.from.endsWith("@newsletter")
     || message.from.endsWith("@broadcast")
   ) {
+    return;
+  }
+
+  if (await shouldIgnoreMessage(message, client.info?.wid, sentMessageIds)) {
     return;
   }
 

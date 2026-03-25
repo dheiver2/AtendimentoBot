@@ -7,7 +7,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "whatsapp:bridge": "node scripts/whatsapp_bridge.js"
+    "whatsapp:bridge": "node scripts/whatsapp_bridge.js",
+    "test:whatsapp-bridge": "node --test tests_js/whatsapp_bridge_helpers.test.js"
   },
   "dependencies": {
     "dotenv": "17.3.1",
