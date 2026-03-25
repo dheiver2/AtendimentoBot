@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import monotonic
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 from config import BASE_DIR, DATA_DIR
@@ -380,13 +380,6 @@ class WhatsAppWebBridgeServer:
         if len(companies) == 1:
             return companies[0]
 
-        if len(companies) > 1:
-            logger.error(
-                "Existem %s empresas cadastradas. Defina WHATSAPP_DEFAULT_COMPANY_ID ou "
-                "WHATSAPP_DEFAULT_COMPANY_LINK_TOKEN para escolher qual empresa atende no WhatsApp.",
-                len(companies),
-            )
-
         return None
 
     async def _build_actions(self, payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -394,6 +387,7 @@ class WhatsAppWebBridgeServer:
         text = _truncate_text_message(str(payload.get("text") or "").strip())
         message_id = str(payload.get("message_id") or "").strip()
         message_type = str(payload.get("message_type") or "chat").strip() or "chat"
+        is_owner_chat = bool(payload.get("is_owner_chat"))
         mime_type = str(payload.get("mime_type") or "").strip()
         file_name = str(payload.get("file_name") or "").strip()
         media_base64 = str(payload.get("media_base64") or "").strip()
@@ -411,6 +405,7 @@ class WhatsAppWebBridgeServer:
             sender=sender,
             text=text,
             message_type=message_type,
+            is_owner_chat=is_owner_chat,
             mime_type=mime_type,
             file_name=file_name,
             media_bytes=media_bytes,
@@ -418,13 +413,13 @@ class WhatsAppWebBridgeServer:
             share_link_builder=self._build_share_link,
         )
 
-    def _build_share_link(self, token: str) -> str | None:
+    def _build_share_link(self, command_text: str) -> str | None:
         status = get_whatsapp_client_status(self.settings)
         own_number = str(status.get("ownNumber") or "").strip() if status else ""
         digits = "".join(char for char in own_number if char.isdigit())
         if not digits:
             return None
-        return f"https://wa.me/{digits}?text={quote(f'/start {token}')}"
+        return f"https://wa.me/{digits}?text={quote(command_text)}"
 
 
 def is_whatsapp_client_running(settings: WhatsAppWebSettings) -> bool:

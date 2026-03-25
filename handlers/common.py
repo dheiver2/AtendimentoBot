@@ -19,6 +19,7 @@ from telegram_commands import PerfilComando, sincronizar_comandos_chat
 
 logger = logging.getLogger(__name__)
 IDENTIDADE_VISUAL_ENVIADA_KEY = "identidade_visual_enviada"
+ADMIN_LINK_PREFIX = "admin_"
 
 # ── Estados do ConversationHandler ──
 (
@@ -64,6 +65,15 @@ def _obter_payload_start(context: ContextTypes.DEFAULT_TYPE) -> str | None:
     return payload or None
 
 
+def _extrair_token_link_admin(payload: str | None) -> str | None:
+    """Extrai o token de um payload de link de admin."""
+    valor = (payload or "").strip()
+    if not valor.startswith(ADMIN_LINK_PREFIX):
+        return None
+    token = valor[len(ADMIN_LINK_PREFIX):].strip()
+    return token or None
+
+
 def _remover_arquivos_empresa(empresa_id: int):
     """Apaga documentos e vector store da empresa resetada."""
     for diretorio_base in [PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
@@ -106,6 +116,14 @@ def _montar_link_atendimento(bot_username: str, link_token: str) -> str:
     if not username:
         raise ValueError("O bot precisa ter um username público no Telegram para gerar links.")
     return f"https://t.me/{username}?start={link_token}"
+
+
+def _montar_link_admin(bot_username: str, admin_link_token: str) -> str:
+    """Monta o deep link do Telegram para admins da empresa."""
+    username = (bot_username or "").strip().lstrip("@")
+    if not username:
+        raise ValueError("O bot precisa ter um username público no Telegram para gerar links.")
+    return f"https://t.me/{username}?start={ADMIN_LINK_PREFIX}{admin_link_token}"
 
 
 async def _obter_empresa_admin_ou_responder(

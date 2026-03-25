@@ -54,6 +54,9 @@ async def _garantir_colunas_empresas(db: aiosqlite.Connection):
     if "link_token" not in colunas:
         await db.execute("ALTER TABLE empresas ADD COLUMN link_token TEXT")
 
+    if "admin_link_token" not in colunas:
+        await db.execute("ALTER TABLE empresas ADD COLUMN admin_link_token TEXT")
+
     colunas = await _obter_colunas_empresas(db)
     if "link_token" in colunas:
         cursor = await db.execute("""
@@ -65,7 +68,20 @@ async def _garantir_colunas_empresas(db: aiosqlite.Connection):
         for row in rows:
             await db.execute(
                 "UPDATE empresas SET link_token = ? WHERE id = ?",
-                (await _gerar_link_token_unico(db), row[0]),
+                (await _gerar_link_token_unico(db, "link_token"), row[0]),
+            )
+
+    if "admin_link_token" in colunas:
+        cursor = await db.execute("""
+            SELECT id
+            FROM empresas
+            WHERE admin_link_token IS NULL OR TRIM(admin_link_token) = ''
+        """)
+        rows = await cursor.fetchall()
+        for row in rows:
+            await db.execute(
+                "UPDATE empresas SET admin_link_token = ? WHERE id = ?",
+                (await _gerar_link_token_unico(db, "admin_link_token"), row[0]),
             )
 
     await db.execute("""
@@ -75,6 +91,10 @@ async def _garantir_colunas_empresas(db: aiosqlite.Connection):
     await db.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_empresas_link_token
         ON empresas(link_token)
+    """)
+    await db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_empresas_admin_link_token
+        ON empresas(admin_link_token)
     """)
 
 
@@ -139,6 +159,29 @@ async def _garantir_tabela_clientes_empresa(db: aiosqlite.Connection):
         await _recriar_tabela_clientes_empresa(db, colunas)
 
 
+async def _garantir_tabela_empresa_admins(db: aiosqlite.Connection):
+    """Garante a tabela de vínculo entre empresas e admins adicionais."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS empresa_admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            empresa_id INTEGER NOT NULL,
+            usuario_id INTEGER NOT NULL UNIQUE,
+            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+        )
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_empresa_admins_empresa_id
+        ON empresa_admins(empresa_id)
+    """)
+    await db.execute("""
+        INSERT OR IGNORE INTO empresa_admins (empresa_id, usuario_id)
+        SELECT id, telegram_user_id
+        FROM empresas
+        WHERE telegram_user_id IS NOT NULL
+    """)
+
+
 async def _deduplicar_documentos(db: aiosqlite.Connection):
     """Remove registros duplicados de documentos, mantendo o mais recente por arquivo."""
     await db.execute("""
@@ -152,16 +195,19 @@ async def _deduplicar_documentos(db: aiosqlite.Connection):
 
 
 def _gerar_link_token() -> str:
-    """Gera um token curto e seguro para deep link do Telegram."""
+    """Gera um token curto e seguro para links do bot."""
     return secrets.token_urlsafe(16)
 
 
-async def _gerar_link_token_unico(db: aiosqlite.Connection) -> str:
-    """Gera um link token único para a tabela de empresas."""
+async def _gerar_link_token_unico(
+    db: aiosqlite.Connection,
+    coluna: str = "link_token",
+) -> str:
+    """Gera um token único para a coluna informada da tabela empresas."""
     while True:
         token = _gerar_link_token()
         cursor = await db.execute(
-            "SELECT 1 FROM empresas WHERE link_token = ? LIMIT 1",
+            f"SELECT 1 FROM empresas WHERE {coluna} = ? LIMIT 1",
             (token,),
         )
         if not await cursor.fetchone():
@@ -177,6 +223,7 @@ async def init_db():
                 nome TEXT NOT NULL,
                 telegram_user_id INTEGER NOT NULL UNIQUE,
                 link_token TEXT NOT NULL UNIQUE,
+                admin_link_token TEXT NOT NULL UNIQUE,
                 nome_bot TEXT DEFAULT 'Assistente',
                 saudacao TEXT DEFAULT 'Olá! Como posso ajudar você hoje?',
                 instrucoes TEXT DEFAULT 'Você é um assistente de atendimento ao cliente. Responda de forma educada e profissional.',
@@ -188,6 +235,7 @@ async def init_db():
         """)
         await _garantir_colunas_empresas(db)
         await _garantir_tabela_clientes_empresa(db)
+        await _garantir_tabela_empresa_admins(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS documentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,22 +295,42 @@ async def init_db():
 async def criar_empresa(nome: str, telegram_user_id: int) -> int:
     """Cria uma nova empresa e retorna o ID."""
     async with aiosqlite.connect(DB_PATH) as db:
-        link_token = await _gerar_link_token_unico(db)
+        link_token = await _gerar_link_token_unico(db, "link_token")
+        admin_link_token = await _gerar_link_token_unico(db, "admin_link_token")
         cursor = await db.execute(
-            "INSERT INTO empresas (nome, telegram_user_id, link_token) VALUES (?, ?, ?)",
-            (nome, telegram_user_id, link_token),
+            """
+            INSERT INTO empresas (nome, telegram_user_id, link_token, admin_link_token)
+            VALUES (?, ?, ?, ?)
+            """,
+            (nome, telegram_user_id, link_token, admin_link_token),
+        )
+        empresa_id = _coerce_lastrowid(cursor.lastrowid)
+        await db.execute(
+            "INSERT OR IGNORE INTO empresa_admins (empresa_id, usuario_id) VALUES (?, ?)",
+            (empresa_id, telegram_user_id),
         )
         await db.commit()
-        return _coerce_lastrowid(cursor.lastrowid)
+        return empresa_id
 
 
 async def obter_empresa_por_admin(telegram_user_id: int) -> dict | None:
-    """Busca empresa pelo ID do Telegram do admin."""
+    """Busca empresa pelo ID do admin, incluindo admins vinculados por link."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM empresas WHERE telegram_user_id = ?",
-            (telegram_user_id,),
+            """
+            SELECT *
+            FROM empresas e
+            WHERE e.telegram_user_id = ?
+               OR EXISTS (
+                    SELECT 1
+                    FROM empresa_admins a
+                    WHERE a.empresa_id = e.id AND a.usuario_id = ?
+               )
+            ORDER BY CASE WHEN e.telegram_user_id = ? THEN 0 ELSE 1 END, e.id ASC
+            LIMIT 1
+            """,
+            (telegram_user_id, telegram_user_id, telegram_user_id),
         )
         row = await cursor.fetchone()
         if row:
@@ -308,6 +376,32 @@ async def obter_empresa_por_link_token(link_token: str) -> dict | None:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+async def obter_empresa_por_admin_link_token(admin_link_token: str) -> dict | None:
+    """Busca empresa pelo token de acesso administrativo."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM empresas WHERE admin_link_token = ?",
+            (admin_link_token,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def adicionar_admin_empresa(empresa_id: int, usuario_id: int):
+    """Vincula um admin adicional à empresa e remove eventual vínculo como cliente."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM clientes_empresa WHERE cliente_telegram_user_id = ?",
+            (usuario_id,),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO empresa_admins (empresa_id, usuario_id) VALUES (?, ?)",
+            (empresa_id, usuario_id),
+        )
+        await db.commit()
 
 
 async def vincular_cliente_empresa(empresa_id: int, cliente_telegram_user_id: int):
@@ -374,8 +468,37 @@ async def obter_empresa_do_usuario(telegram_user_id: int) -> dict | None:
     """Resolve a empresa do usuário, priorizando o papel de admin."""
     empresa = await obter_empresa_por_admin(telegram_user_id)
     if empresa:
+        empresa["_usuario_admin"] = True
         return empresa
-    return await obter_empresa_do_cliente(telegram_user_id)
+
+    empresa = await obter_empresa_do_cliente(telegram_user_id)
+    if empresa:
+        empresa["_usuario_admin"] = False
+        return empresa
+    return None
+
+
+async def usuario_e_admin_da_empresa(empresa_id: int, usuario_id: int) -> bool:
+    """Retorna se o usuário é admin da empresa informada."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT 1
+            FROM empresas e
+            WHERE e.id = ?
+              AND (
+                    e.telegram_user_id = ?
+                    OR EXISTS (
+                        SELECT 1
+                        FROM empresa_admins a
+                        WHERE a.empresa_id = e.id AND a.usuario_id = ?
+                    )
+              )
+            LIMIT 1
+            """,
+            (empresa_id, usuario_id, usuario_id),
+        )
+        return bool(await cursor.fetchone())
 
 
 async def contar_clientes_empresa(empresa_id: int) -> int:
@@ -394,10 +517,10 @@ async def listar_ids_admins() -> list[int]:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
-            SELECT telegram_user_id
-            FROM empresas
-            WHERE telegram_user_id IS NOT NULL
-            ORDER BY telegram_user_id
+            SELECT usuario_id
+            FROM empresa_admins
+            WHERE usuario_id IS NOT NULL
+            ORDER BY usuario_id
             """
         )
         rows = await cursor.fetchall()
@@ -627,5 +750,6 @@ async def excluir_empresa_com_dados(empresa_id: int):
         await db.execute("DELETE FROM faqs WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM documentos WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM clientes_empresa WHERE empresa_id = ?", (empresa_id,))
+        await db.execute("DELETE FROM empresa_admins WHERE empresa_id = ?", (empresa_id,))
         await db.execute("DELETE FROM empresas WHERE id = ?", (empresa_id,))
         await db.commit()

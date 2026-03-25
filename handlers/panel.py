@@ -127,7 +127,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 Comandos do admin:\n\n"
             "/start — Abrir a configuração inicial\n"
             "/meuid — Mostrar seu ID do Telegram\n"
-            "/link — Gerar o link de atendimento para os clientes\n"
+            "/link — Gerar os links de admin e cliente\n"
             "/painel — Painel de gerenciamento\n"
             "/upload — Entrar no modo de envio de documentos\n"
             "/imagem — Atualizar a imagem do agente\n"
@@ -143,7 +143,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Você pode enviar documentos diretamente neste chat a qualquer momento.\n"
             f"Formatos aceitos: {formatos}.\n"
             f"Para /imagem, envie foto do Telegram ou imagem em: {formatos_imagem}.\n"
-            "Depois de configurar e enviar documentos, use /link para compartilhar o atendimento com seus clientes.\n"
+            "Depois de configurar e enviar documentos, use /link para compartilhar os acessos necessários.\n"
             "Clientes entram pelo link e usam este bot só para conversar."
         )
     elif empresa_cliente:
@@ -186,7 +186,7 @@ async def cmd_meuid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gera o deep link que o admin envia para seus clientes."""
-    from .common import _montar_link_atendimento
+    from .common import _montar_link_admin, _montar_link_atendimento
 
     empresa = await _obter_empresa_admin_ou_responder(update)
     if not empresa:
@@ -194,14 +194,18 @@ async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_info = await context.bot.get_me()
     try:
-        link = _montar_link_atendimento(bot_info.username or "", empresa["link_token"])
+        link_cliente = _montar_link_atendimento(bot_info.username or "", empresa["link_token"])
+        link_admin = _montar_link_admin(bot_info.username or "", empresa["admin_link_token"])
     except ValueError as exc:
         await update.effective_message.reply_text(f"❌ {exc}")
         return
 
     await update.effective_message.reply_text(
-        f"🔗 Link de atendimento de {empresa['nome']}:\n{link}\n\n"
-        "Envie esse link para seus clientes. Quando eles abrirem, poderão apenas conversar com o bot."
+        f"🔗 Acessos de {empresa['nome']}:\n\n"
+        f"Cliente:\n{link_cliente}\n\n"
+        f"Admin:\n{link_admin}\n\n"
+        "Compartilhe o link de cliente com quem vai falar com o bot.\n"
+        "Compartilhe o link de admin apenas com quem pode gerenciar a empresa."
     )
 
 

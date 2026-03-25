@@ -111,12 +111,15 @@ class CmdLinkTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.panel._obter_empresa_admin_ou_responder")
     async def test_gera_link(self, mock_admin):
         from handlers.panel import cmd_link
-        mock_admin.return_value = make_empresa(link_token="tok123")
+        mock_admin.return_value = make_empresa(link_token="tok123", admin_link_token="adm123")
         update = make_update()
         ctx = make_context()
         await cmd_link(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("t.me/test_bot?start=tok123", texto)
+        self.assertIn("t.me/test_bot?start=admin_adm123", texto)
+        self.assertIn("cliente", texto.lower())
+        self.assertIn("admin", texto.lower())
 
 
 class CmdStatusTests(unittest.IsolatedAsyncioTestCase):

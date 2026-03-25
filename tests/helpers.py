@@ -64,6 +64,7 @@ def make_empresa(empresa_id=1, nome="Acme Corp", ativo=1, **kwargs):
         "instrucoes": kwargs.get("instrucoes", "Seja educada"),
         "ativo": ativo,
         "link_token": kwargs.get("link_token", "abc123"),
+        "admin_link_token": kwargs.get("admin_link_token", "adm123"),
         "horario_atendimento": kwargs.get("horario_atendimento", ""),
         "fallback_contato": kwargs.get("fallback_contato", ""),
     }

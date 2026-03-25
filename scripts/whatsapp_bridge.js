@@ -10,8 +10,10 @@ const qrcode = require("qrcode-terminal");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const {
   getMessageId,
+  normalizeInboundMessageType,
   normalizeWidSerialized,
   rememberSentMessage,
+  shouldDownloadInboundMedia,
   shouldIgnoreMessage,
 } = require("./whatsapp_bridge_helpers");
 
@@ -120,6 +122,9 @@ const client = new Client({
 
 async function buildPayload(message) {
   let sender = String(message.from || "").trim();
+  const text = String(message.body || "").trim();
+  const messageType = normalizeInboundMessageType(message.type, text);
+  const ownChatId = normalizeWidSerialized(client.info?.wid);
   try {
     const chat = typeof message.getChat === "function" ? await message.getChat() : null;
     const chatId = normalizeWidSerialized(chat?.id);
@@ -133,18 +138,30 @@ async function buildPayload(message) {
   const payload = {
     sender,
     message_id: getMessageId(message),
-    text: String(message.body || "").trim(),
-    message_type: String(message.type || "chat"),
+    text,
+    message_type: messageType,
+    is_owner_chat: Boolean(ownChatId && sender === ownChatId),
     mime_type: "",
     file_name: "",
     media_base64: "",
   };
 
-  if (!message.hasMedia) {
+  if (!message.hasMedia || !shouldDownloadInboundMedia(messageType)) {
     return payload;
   }
 
-  const media = await message.downloadMedia();
+  let media = null;
+  try {
+    media = await message.downloadMedia();
+  } catch (error) {
+    console.warn(
+      `Nao foi possivel baixar a midia da mensagem ${getMessageId(message) || "<sem-id>"} `
+      + `(${messageType}). O bridge vai continuar sem anexo.`,
+      error,
+    );
+    return payload;
+  }
+
   if (!media) {
     return payload;
   }

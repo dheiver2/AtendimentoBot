@@ -19,6 +19,7 @@ from bot_profile_photo import (
 )
 from config import IMAGES_DIR, PDFS_DIR, VECTOR_STORES_DIR
 from database import (
+    adicionar_admin_empresa,
     atualizar_empresa,
     contar_clientes_empresa,
     criar_empresa,
@@ -27,6 +28,7 @@ from database import (
     excluir_documento,
     excluir_empresa_com_dados,
     excluir_faq,
+    listar_empresas,
     limpar_faqs,
     listar_documentos,
     listar_faqs,
@@ -34,6 +36,8 @@ from database import (
     obter_empresa_do_cliente,
     obter_empresa_do_usuario,
     obter_empresa_por_admin,
+    obter_empresa_por_admin_link_token,
+    obter_empresa_por_id,
     obter_empresa_por_link_token,
     registrar_conversa,
     registrar_documento,
@@ -46,7 +50,11 @@ from document_processor import (
     processar_documento,
     processar_documento_salvo,
 )
-from handlers.common import _gerar_capa_empresa, _montar_texto_boas_vindas_cliente
+from handlers.common import (
+    _extrair_token_link_admin,
+    _gerar_capa_empresa,
+    _montar_texto_boas_vindas_cliente,
+)
 from metrics import obter_resumo_metricas_empresa
 from rag_chain import gerar_resposta
 from rate_limiter import (
@@ -94,6 +102,7 @@ _STATE_FAQ_RESPOSTA = "faq_resposta"
 _STATE_RESET_CONFIRMACAO = "reset_confirmacao"
 _STATE_EDITAR_CAMPO = "editar_campo"
 _STATE_EDITAR_VALOR = "editar_valor"
+_STATE_SELECAO_EMPRESA = "selecao_empresa"
 
 _FIELD_LABELS = {
     "nome": "nome da empresa",
@@ -204,6 +213,143 @@ def _make_welcome_actions(empresa: dict, session: WhatsAppSession) -> list[dict[
         )
         session.identidade_visual_enviada = True
         return [_make_text_action(texto)]
+
+
+def _iniciar_onboarding_admin(
+    session: WhatsAppSession,
+    *,
+    prefixo: str | None = None,
+    mostrar_resumo: bool = True,
+) -> list[dict[str, str]]:
+    _clear_session(session, keep_identity=False)
+    session.state = _STATE_ONBOARDING_NOME_EMPRESA
+
+    linhas: list[str] = []
+    if prefixo:
+        linhas.extend([prefixo, ""])
+    linhas.append("👋 Vamos configurar seu agente de atendimento.")
+    linhas.append("")
+    if mostrar_resumo:
+        linhas.extend(
+            [
+                "Neste onboarding voce vai definir:",
+                "1. Nome da empresa",
+                "2. Nome do assistente",
+                "3. Saudacao inicial",
+                "4. Instrucoes de comportamento",
+                "",
+            ]
+        )
+    linhas.extend(
+        [
+            "Para comecar, qual e o nome da sua empresa?",
+            "Se quiser sair, envie /cancelar.",
+        ]
+    )
+    return [_make_text_action("\n".join(linhas))]
+
+
+def _snapshot_empresas_para_selecao(empresas: list[dict]) -> list[dict[str, Any]]:
+    return [{"id": int(empresa["id"]), "nome": str(empresa["nome"])} for empresa in empresas]
+
+
+def _texto_selecao_empresa(
+    empresas: list[dict[str, Any]],
+    *,
+    manter_pendente: bool = False,
+) -> str:
+    linhas = [
+        "🏢 Escolha a empresa com quem deseja falar:",
+        "",
+    ]
+    for indice, empresa in enumerate(empresas, start=1):
+        linhas.append(f"{indice}. {empresa['nome']}")
+
+    linhas.extend(
+        [
+            "",
+            "Responda com o numero da empresa desejada.",
+        ]
+    )
+    if manter_pendente:
+        linhas.append("Depois da escolha, eu continuo a partir da sua mensagem anterior.")
+    linhas.append("Se quiser cancelar, use /cancelar.")
+    return "\n".join(linhas)
+
+
+def _iniciar_selecao_empresa(
+    session: WhatsAppSession,
+    empresas: list[dict],
+    *,
+    pending_text: str = "",
+) -> list[dict[str, str]]:
+    escolhas = _snapshot_empresas_para_selecao(empresas)
+    _clear_session(session)
+    session.state = _STATE_SELECAO_EMPRESA
+    session.data["empresa_choices"] = escolhas
+    texto_pendente = (pending_text or "").strip()
+    if texto_pendente:
+        session.data["pending_text"] = texto_pendente
+    return [
+        _make_text_action(
+            _texto_selecao_empresa(escolhas, manter_pendente=bool(texto_pendente))
+        )
+    ]
+
+
+def _resolver_selecao_empresa(
+    text: str,
+    escolhas: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    texto = (text or "").strip()
+    if not texto:
+        return None
+
+    if texto.isdigit():
+        indice = int(texto)
+        if 1 <= indice <= len(escolhas):
+            return escolhas[indice - 1]
+        for escolha in escolhas:
+            if escolha["id"] == indice:
+                return escolha
+
+    texto_normalizado = texto.casefold()
+    correspondencias = [
+        escolha
+        for escolha in escolhas
+        if str(escolha["nome"]).strip().casefold() == texto_normalizado
+    ]
+    if len(correspondencias) == 1:
+        return correspondencias[0]
+    return None
+
+
+async def _vincular_cliente_e_responder(
+    *,
+    empresa: dict,
+    user_id: int,
+    session: WhatsAppSession,
+    resolve_default_company: DefaultCompanyResolver,
+    pending_text: str = "",
+) -> list[dict[str, str]]:
+    await vincular_cliente_empresa(empresa["id"], user_id)
+    session.identidade_visual_enviada = False
+    _clear_session(session)
+    actions = _make_welcome_actions(empresa, session)
+
+    texto_pendente = (pending_text or "").strip()
+    if not texto_pendente:
+        return actions
+
+    resposta_pendente = await _processar_interacao_agente(
+        session=session,
+        user_id=user_id,
+        text=texto_pendente,
+        resolve_default_company=resolve_default_company,
+        auto_bind_default_company=False,
+    )
+    actions.extend(resposta_pendente)
+    return actions
 
 
 def _parse_command(text: str) -> tuple[str | None, list[str]]:
@@ -422,8 +568,44 @@ async def _handle_state_message(
     mime_type: str,
     file_name: str,
     media_bytes: bytes | None,
+    resolve_default_company: DefaultCompanyResolver,
 ) -> list[dict[str, str]] | None:
     state = session.state
+    if state == _STATE_SELECAO_EMPRESA:
+        escolhas = session.data.get("empresa_choices")
+        if not isinstance(escolhas, list) or not escolhas:
+            _clear_session(session)
+            return [_make_text_action("❌ A lista de empresas expirou. Envie uma nova mensagem para recomeçar.")]
+
+        escolha = _resolver_selecao_empresa(text, escolhas)
+        if not escolha:
+            return [
+                _make_text_action(
+                    "⚠️ Opcao invalida.\n\n"
+                    + _texto_selecao_empresa(
+                        escolhas,
+                        manter_pendente=bool(session.data.get("pending_text")),
+                    )
+                )
+            ]
+
+        empresa = await obter_empresa_por_id(int(escolha["id"]))
+        if not empresa:
+            _clear_session(session)
+            return [
+                _make_text_action(
+                    "❌ Essa empresa nao esta mais disponivel. Envie uma nova mensagem para atualizar a lista."
+                )
+            ]
+
+        return await _vincular_cliente_e_responder(
+            empresa=empresa,
+            user_id=user_id,
+            session=session,
+            resolve_default_company=resolve_default_company,
+            pending_text=str(session.data.get("pending_text") or ""),
+        )
+
     if state == _STATE_ONBOARDING_NOME_EMPRESA:
         if not text:
             return [_make_text_action("⚠️ Envie o nome da sua empresa em texto.")]
@@ -708,11 +890,47 @@ async def _cmd_start(
     user_id: int,
     args: list[str],
     session: WhatsAppSession,
+    resolve_default_company: DefaultCompanyResolver,
+    is_owner_chat: bool,
 ) -> list[dict[str, str]]:
     payload = args[0].strip() if args else ""
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = await obter_empresa_do_cliente(user_id)
     formatos = listar_formatos_suportados()
+
+    admin_link_token = _extrair_token_link_admin(payload)
+    if admin_link_token:
+        empresa_link_admin = await obter_empresa_por_admin_link_token(admin_link_token)
+        if not empresa_link_admin:
+            return [_make_text_action("❌ Este link de admin e invalido ou expirou.")]
+
+        if empresa_admin:
+            if empresa_admin["id"] == empresa_link_admin["id"]:
+                return [
+                    _make_text_action(
+                        f"Voce ja e admin de {empresa_admin['nome']}.\n"
+                        "Use /painel para gerenciar o agente e /link para compartilhar os acessos."
+                    )
+                ]
+            return [_make_text_action("🔒 Este link de admin pertence a outra empresa.")]
+
+        await adicionar_admin_empresa(empresa_link_admin["id"], user_id)
+        _clear_session(session)
+        return [
+            _make_text_action(
+                f"🔐 Seu acesso de admin para {empresa_link_admin['nome']} foi ativado.\n\n"
+                "Use /painel para gerenciar o agente, /link para compartilhar os acessos "
+                "e envie uma pergunta neste chat para testar."
+            )
+        ]
+
+    if is_owner_chat and not empresa_admin:
+        if payload:
+            return _iniciar_onboarding_admin(
+                session,
+                prefixo="🔒 Este numero conectado como admin nao entra pelo link do cliente.",
+            )
+        return _iniciar_onboarding_admin(session)
 
     if payload:
         empresa_link = await obter_empresa_por_link_token(payload)
@@ -729,10 +947,12 @@ async def _cmd_start(
                 ]
             return [_make_text_action("🔒 Este token e destinado a clientes.")]
 
-        await vincular_cliente_empresa(empresa_link["id"], user_id)
-        session.identidade_visual_enviada = False
-        _clear_session(session)
-        return _make_welcome_actions(empresa_link, session)
+        return await _vincular_cliente_e_responder(
+            empresa=empresa_link,
+            user_id=user_id,
+            session=session,
+            resolve_default_company=resolve_default_company,
+        )
 
     if empresa_admin:
         _clear_session(session)
@@ -746,7 +966,7 @@ async def _cmd_start(
             _make_text_action(
                 f"👋 Sua configuracao para {empresa_admin['nome']} ja esta ativa.\n\n"
                 "Use /painel para gerenciar o agente.\n"
-                "Use /link para gerar o acesso dos clientes.\n"
+                "Use /link para gerar os acessos de admin e cliente.\n"
                 "Use /ajuda para ver os comandos.\n"
                 f"{dica_teste}"
             )
@@ -757,23 +977,43 @@ async def _cmd_start(
         _clear_session(session)
         return _make_welcome_actions(empresa_cliente, session)
 
-    _clear_session(session, keep_identity=False)
-    session.state = _STATE_ONBOARDING_NOME_EMPRESA
-    return [
-        _make_text_action(
-            "👋 Vamos configurar seu agente de atendimento.\n\n"
-            "Neste onboarding voce vai definir:\n"
-            "1. Nome da empresa\n"
-            "2. Nome do assistente\n"
-            "3. Saudacao inicial\n"
-            "4. Instrucoes de comportamento\n\n"
-            "Para comecar, qual e o nome da sua empresa?\n"
-            "Se quiser sair, envie /cancelar."
-        )
-    ]
+    if not is_owner_chat:
+        empresa_padrao = await resolve_default_company()
+        if empresa_padrao:
+            return await _vincular_cliente_e_responder(
+                empresa=empresa_padrao,
+                user_id=user_id,
+                session=session,
+                resolve_default_company=resolve_default_company,
+            )
+
+        empresas = await listar_empresas()
+        if len(empresas) > 1:
+            return _iniciar_selecao_empresa(session, empresas)
+        if len(empresas) == 1:
+            return await _vincular_cliente_e_responder(
+                empresa=empresas[0],
+                user_id=user_id,
+                session=session,
+                resolve_default_company=resolve_default_company,
+            )
+
+        return [
+            _make_text_action(
+                "👋 Este numero ainda nao foi vinculado a um atendimento.\n"
+                "Aguarde o admin concluir a configuracao do WhatsApp ou compartilhar o acesso correto."
+            )
+        ]
+
+    return _iniciar_onboarding_admin(session)
 
 
-async def _cmd_registrar(*, user_id: int, session: WhatsAppSession) -> list[dict[str, str]]:
+async def _cmd_registrar(
+    *,
+    user_id: int,
+    session: WhatsAppSession,
+    is_owner_chat: bool,
+) -> list[dict[str, str]]:
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = await obter_empresa_do_cliente(user_id)
     if empresa_admin:
@@ -785,16 +1025,15 @@ async def _cmd_registrar(*, user_id: int, session: WhatsAppSession) -> list[dict
         ]
     if empresa_cliente:
         return [_make_text_action(_mensagem_somente_admin())]
+    if not is_owner_chat:
+        return [
+            _make_text_action(
+                "🔒 O cadastro e a configuracao da empresa so podem ser feitos pelo numero conectado como admin.\n"
+                "Se voce chegou pelo link de atendimento, use este chat apenas para conversar."
+            )
+        ]
 
-    _clear_session(session, keep_identity=False)
-    session.state = _STATE_ONBOARDING_NOME_EMPRESA
-    return [
-        _make_text_action(
-            "👋 Vamos configurar seu agente de atendimento.\n\n"
-            "Qual e o nome da sua empresa?\n"
-            "Se quiser sair, envie /cancelar."
-        )
-    ]
+    return _iniciar_onboarding_admin(session, mostrar_resumo=False)
 
 
 async def _cmd_sair(*, user_id: int, session: WhatsAppSession) -> list[dict[str, str]]:
@@ -814,12 +1053,13 @@ async def _cmd_sair(*, user_id: int, session: WhatsAppSession) -> list[dict[str,
     return [
         _make_text_action(
             f"✅ Voce saiu do atendimento de {empresa['nome']}.\n\n"
-            "Se quiser entrar novamente, use /start TOKEN com o token enviado pelo administrador."
+            "Se quiser entrar novamente, envie /empresas para escolher outro atendimento "
+            "ou use /start TOKEN se recebeu um acesso direto."
         )
     ]
 
 
-async def _cmd_ajuda(*, user_id: int) -> list[dict[str, str]]:
+async def _cmd_ajuda(*, user_id: int, is_owner_chat: bool) -> list[dict[str, str]]:
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = await obter_empresa_do_cliente(user_id)
     formatos = listar_formatos_suportados()
@@ -829,7 +1069,7 @@ async def _cmd_ajuda(*, user_id: int) -> list[dict[str, str]]:
             "/start - Abrir a configuracao inicial\n"
             "/registrar - Iniciar o cadastro\n"
             "/meuid - Mostrar seu identificador\n"
-            "/link - Gerar o acesso dos clientes\n"
+            "/link - Gerar os acessos de admin e cliente\n"
             "/painel - Ver resumo geral\n"
             "/upload - Entrar no modo de envio de documentos\n"
             "/documentos - Listar, reprocessar, reindexar e excluir documentos\n"
@@ -844,22 +1084,26 @@ async def _cmd_ajuda(*, user_id: int) -> list[dict[str, str]]:
             "/reset - Apagar tudo e recomecar\n"
             "/cancelar - Cancelar o fluxo atual\n\n"
             f"Voce pode enviar documentos diretamente neste chat. Formatos aceitos: {formatos}.\n"
-            "Clientes devem entrar com /start TOKEN."
+            "Clientes podem entrar com /start TOKEN ou escolher a empresa pelo proprio WhatsApp."
         )
     elif empresa_cliente:
         texto = (
             f"💬 Este chat esta vinculado ao atendimento de {empresa_cliente['nome']}.\n\n"
             "Basta enviar sua mensagem normalmente para conversar com o agente.\n"
+            "Comandos de configuracao e gestao ficam bloqueados para clientes.\n"
             "Se precisar informar seu identificador ao atendimento, use /meuid.\n"
-            "Se quiser sair deste atendimento, use /sair."
+            "Se quiser trocar de empresa, use /empresas. Se quiser sair, use /sair."
         )
     else:
         texto = (
             "👋 Este atendimento possui dois perfis:\n\n"
             "- admin: configura empresa, documentos, FAQ e horario\n"
-            "- cliente: usa o token enviado pelo admin para conversar\n\n"
-            "Se voce e o admin, envie /start para iniciar.\n"
-            "Se voce e cliente, envie /start TOKEN."
+            "- cliente: escolhe a empresa e conversa normalmente\n\n"
+            + (
+                "Como este e o numero conectado no WhatsApp, use /start para configurar o admin."
+                if is_owner_chat
+                else "Se voce recebeu um link de admin, abra-o para liberar a gestao. Se voce e cliente, envie /empresas para escolher a empresa ou /start TOKEN se recebeu um acesso direto."
+            )
         )
     return [_make_text_action(texto)]
 
@@ -887,18 +1131,122 @@ async def _cmd_link(
             return [_make_text_action(_mensagem_somente_admin())]
         return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
 
-    token = empresa["link_token"]
-    share_link = share_link_builder(token) if share_link_builder else None
+    token_cliente = empresa["link_token"]
+    token_admin = empresa["admin_link_token"]
+    share_link_cliente = (
+        share_link_builder(f"/start {token_cliente}") if share_link_builder else None
+    )
+    share_link_admin = (
+        share_link_builder(f"/start admin_{token_admin}") if share_link_builder else None
+    )
+    mensagem_cliente_linhas = [
+        f"Olá! Para falar com o atendimento de {empresa['nome']}, use este acesso:",
+        "",
+    ]
+    if share_link_cliente:
+        mensagem_cliente_linhas.append(share_link_cliente)
+    else:
+        mensagem_cliente_linhas.append(f"/start {token_cliente}")
+    mensagem_cliente_linhas.extend(
+        [
+            "",
+            "Se preferir, voce tambem pode entrar enviando:",
+            f"/start {token_cliente}",
+        ]
+    )
+    mensagem_cliente = "\n".join(mensagem_cliente_linhas)
+    mensagem_admin_linhas = [
+        f"Olá! Para administrar o atendimento de {empresa['nome']}, use este acesso:",
+        "",
+    ]
+    if share_link_admin:
+        mensagem_admin_linhas.append(share_link_admin)
+    else:
+        mensagem_admin_linhas.append(f"/start admin_{token_admin}")
+    mensagem_admin_linhas.extend(
+        [
+            "",
+            "Se preferir, voce tambem pode entrar enviando:",
+            f"/start admin_{token_admin}",
+        ]
+    )
+    mensagem_admin = "\n".join(mensagem_admin_linhas)
     linhas = [
         f"🔗 Acesso de atendimento de {empresa['nome']}",
         "",
-        f"Token: {token}",
-        "O cliente pode entrar enviando:",
-        f"/start {token}",
+        f"Token do cliente: {token_cliente}",
+        f"Token do admin: {token_admin}",
+        "",
+        "Cliente pode entrar enviando:",
+        f"/start {token_cliente}",
+        "",
+        "Admin pode entrar enviando:",
+        f"/start admin_{token_admin}",
     ]
-    if share_link:
-        linhas.extend(["", f"Link pronto para compartilhar:\n{share_link}"])
+    if share_link_cliente:
+        linhas.extend(["", f"Link do cliente:\n{share_link_cliente}"])
+    if share_link_admin:
+        linhas.extend(["", f"Link do admin:\n{share_link_admin}"])
+    linhas.extend(
+        [
+            "",
+            "O cliente entra apenas para conversar. O link de admin concede acesso de gestao.",
+            "",
+            f"Mensagem pronta para encaminhar ao cliente:\n\n{mensagem_cliente}",
+            "",
+            f"Mensagem pronta para encaminhar ao admin:\n\n{mensagem_admin}",
+        ]
+    )
     return [_make_text_action("\n".join(linhas))]
+
+
+async def _cmd_empresas(
+    *,
+    user_id: int,
+    session: WhatsAppSession,
+    resolve_default_company: DefaultCompanyResolver,
+    is_owner_chat: bool,
+) -> list[dict[str, str]]:
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    if empresa_admin:
+        return [
+            _make_text_action(
+                "🔒 Este chat ja esta operando como admin.\n"
+                "Use /painel para gerenciar a empresa ou um outro numero para simular clientes."
+            )
+        ]
+
+    empresas = await listar_empresas()
+    if not empresas:
+        return [
+            _make_text_action(
+                "👋 Ainda nao existem empresas disponiveis neste WhatsApp.\n"
+                + (
+                    "Use /start para configurar a primeira empresa."
+                    if is_owner_chat
+                    else "Aguarde o admin concluir a configuracao."
+                )
+            )
+        ]
+
+    empresa_padrao = await resolve_default_company()
+    if empresa_padrao and len(empresas) == 1:
+        return await _vincular_cliente_e_responder(
+            empresa=empresa_padrao,
+            user_id=user_id,
+            session=session,
+            resolve_default_company=resolve_default_company,
+        )
+
+    if len(empresas) == 1:
+        return await _vincular_cliente_e_responder(
+            empresa=empresas[0],
+            user_id=user_id,
+            session=session,
+            resolve_default_company=resolve_default_company,
+        )
+
+    return _iniciar_selecao_empresa(session, empresas)
 
 
 async def _cmd_painel(*, user_id: int) -> list[dict[str, str]]:
@@ -1364,10 +1712,36 @@ async def _cmd_reset(*, user_id: int, session: WhatsAppSession) -> list[dict[str
 
 async def _processar_interacao_agente(
     *,
+    session: WhatsAppSession,
     user_id: int,
     text: str,
     resolve_default_company: DefaultCompanyResolver,
+    auto_bind_default_company: bool,
 ) -> list[dict[str, str]]:
+    empresa = await obter_empresa_do_usuario(user_id)
+    usuario_admin = False
+    if empresa:
+        usuario_admin = bool(empresa.get("_usuario_admin"))
+    else:
+        empresa = await resolve_default_company()
+        if empresa and auto_bind_default_company:
+            await vincular_cliente_empresa(empresa["id"], user_id)
+        else:
+            empresas = await listar_empresas()
+            if len(empresas) > 1 and auto_bind_default_company:
+                return _iniciar_selecao_empresa(session, empresas, pending_text=text)
+            if len(empresas) == 1 and auto_bind_default_company:
+                empresa = empresas[0]
+                await vincular_cliente_empresa(empresa["id"], user_id)
+
+        if not empresa:
+            return [
+                _make_text_action(
+                    "👋 Este numero ainda nao foi vinculado a um atendimento.\n"
+                    "Aguarde o admin concluir a configuracao do WhatsApp ou compartilhar o acesso correto."
+                )
+            ]
+
     if not text:
         return [_make_text_action("No momento eu consigo responder apenas mensagens de texto.")]
 
@@ -1379,20 +1753,6 @@ async def _processar_interacao_agente(
         pergunta = validar_mensagem_usuario(text)
     except InputValidationError as exc:
         return [_make_text_action(f"⚠️ {exc.message}")]
-
-    empresa = await obter_empresa_do_usuario(user_id)
-    usuario_admin = False
-    if empresa:
-        usuario_admin = empresa.get("telegram_user_id") == user_id
-    else:
-        empresa = await resolve_default_company()
-        if not empresa:
-            return [
-                _make_text_action(
-                    "👋 Este atendimento ainda nao esta configurado para voce.\n"
-                    "Se voce e o admin, envie /start. Se voce e cliente, envie /start TOKEN."
-                )
-            ]
 
     resposta = await processar_pergunta(
         empresa=empresa,
@@ -1416,6 +1776,7 @@ async def processar_mensagem_whatsapp(
     sender: str,
     text: str,
     message_type: str,
+    is_owner_chat: bool = False,
     mime_type: str = "",
     file_name: str = "",
     media_bytes: bytes | None = None,
@@ -1451,6 +1812,7 @@ async def processar_mensagem_whatsapp(
             mime_type=mime_type,
             file_name=file_name,
             media_bytes=media_bytes,
+            resolve_default_company=resolve_default_company,
         ) or []
 
     if session.state == _STATE_ONBOARDING_CONFIRMACAO and comando in {"confirmar", "recomecar"}:
@@ -1463,6 +1825,7 @@ async def processar_mensagem_whatsapp(
             mime_type=mime_type,
             file_name=file_name,
             media_bytes=media_bytes,
+            resolve_default_company=resolve_default_company,
         ) or []
 
     if session.state == _STATE_RESET_CONFIRMACAO and comando in {"sim", "confirmar"}:
@@ -1475,6 +1838,7 @@ async def processar_mensagem_whatsapp(
             mime_type=mime_type,
             file_name=file_name,
             media_bytes=media_bytes,
+            resolve_default_company=resolve_default_company,
         ) or []
 
     if comando:
@@ -1483,13 +1847,31 @@ async def processar_mensagem_whatsapp(
             return [_make_text_action(rate_msg)]
 
         if comando == "start":
-            return await _cmd_start(sender=sender, user_id=user_id, args=args, session=session)
+            return await _cmd_start(
+                sender=sender,
+                user_id=user_id,
+                args=args,
+                session=session,
+                resolve_default_company=resolve_default_company,
+                is_owner_chat=is_owner_chat,
+            )
         if comando == "registrar":
-            return await _cmd_registrar(user_id=user_id, session=session)
+            return await _cmd_registrar(
+                user_id=user_id,
+                session=session,
+                is_owner_chat=is_owner_chat,
+            )
         if comando == "sair":
             return await _cmd_sair(user_id=user_id, session=session)
         if comando == "ajuda":
-            return await _cmd_ajuda(user_id=user_id)
+            return await _cmd_ajuda(user_id=user_id, is_owner_chat=is_owner_chat)
+        if comando in {"empresas", "trocar", "trocar_empresa"}:
+            return await _cmd_empresas(
+                user_id=user_id,
+                session=session,
+                resolve_default_company=resolve_default_company,
+                is_owner_chat=is_owner_chat,
+            )
         if comando == "meuid":
             return await _cmd_meuid(sender=sender, user_id=user_id)
         if comando == "link":
@@ -1536,11 +1918,23 @@ async def processar_mensagem_whatsapp(
         mime_type=mime_type,
         file_name=file_name,
         media_bytes=media_bytes,
+        resolve_default_company=resolve_default_company,
     )
     if state_result is not None:
         return state_result
 
     empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = None if empresa_admin else await obter_empresa_do_cliente(user_id)
+    if is_owner_chat and not empresa_admin and not empresa_cliente:
+        return await _cmd_start(
+            sender=sender,
+            user_id=user_id,
+            args=[],
+            session=session,
+            resolve_default_company=resolve_default_company,
+            is_owner_chat=True,
+        )
+
     if message_type == "document" and media_bytes and empresa_admin:
         return await _processar_documento_recebido(
             user_id=user_id,
@@ -1557,7 +1951,9 @@ async def processar_mensagem_whatsapp(
         return [_make_text_action("No momento eu consigo responder apenas mensagens de texto.")]
 
     return await _processar_interacao_agente(
+        session=session,
         user_id=user_id,
         text=texto,
         resolve_default_company=resolve_default_company,
+        auto_bind_default_company=not is_owner_chat,
     )

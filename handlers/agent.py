@@ -56,7 +56,7 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         empresa=empresa,
         pergunta_bruta=pergunta,
         usuario_id=user_id,
-        usuario_admin=empresa.get("telegram_user_id") == user_id,
+        usuario_admin=bool(empresa.get("_usuario_admin")),
         faq_loader=listar_faqs,
         registrar_conversa_fn=registrar_conversa,
         rate_limit_checker=verificar_rate_limit,

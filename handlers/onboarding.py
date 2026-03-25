@@ -5,12 +5,14 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import (
+    adicionar_admin_empresa,
     atualizar_empresa,
     criar_empresa,
     desvincular_cliente,
     excluir_empresa_com_dados,
     obter_empresa_do_cliente,
     obter_empresa_por_admin,
+    obter_empresa_por_admin_link_token,
     obter_empresa_por_link_token,
     vincular_cliente_empresa,
 )
@@ -32,6 +34,7 @@ from .common import (
     AGUARDANDO_NOME_EMPRESA,
     AGUARDANDO_SAUDACAO,
     _enviar_boas_vindas_cliente,
+    _extrair_token_link_admin,
     _limpar_estado_usuario,
     _mensagem_somente_admin,
     _obter_empresa_admin_ou_responder,
@@ -72,6 +75,40 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     formatos = listar_formatos_suportados()
 
     if payload:
+        admin_link_token = _extrair_token_link_admin(payload)
+        if admin_link_token:
+            empresa_link_admin = await obter_empresa_por_admin_link_token(admin_link_token)
+            if not empresa_link_admin:
+                await _sincronizar_comandos_do_chat(update, context, "padrao")
+                await mensagem.reply_text(
+                    "❌ Este link de admin é inválido ou expirou.\n"
+                    "Peça um novo link administrativo ao responsável."
+                )
+                return ConversationHandler.END
+
+            if empresa_admin:
+                await _sincronizar_comandos_do_chat(update, context, "admin")
+                if empresa_admin["id"] == empresa_link_admin["id"]:
+                    await mensagem.reply_text(
+                        f"Você já é admin de {empresa_admin['nome']}.\n"
+                        "Use /painel para gerenciar o agente e /link para compartilhar os acessos."
+                    )
+                else:
+                    await mensagem.reply_text(
+                        "🔒 Este link de admin pertence a outra empresa.\n"
+                        "Seu usuário já está cadastrado como admin de outro atendimento."
+                    )
+                return ConversationHandler.END
+
+            await adicionar_admin_empresa(empresa_link_admin["id"], user_id)
+            await _sincronizar_comandos_do_chat(update, context, "admin")
+            await mensagem.reply_text(
+                f"🔐 Seu acesso de admin para {empresa_link_admin['nome']} foi ativado.\n\n"
+                "Use /painel para gerenciar o agente, /link para compartilhar os acessos "
+                "e envie uma pergunta neste chat para testar."
+            )
+            return ConversationHandler.END
+
         empresa_link = await obter_empresa_por_link_token(payload)
         if not empresa_link:
             await _sincronizar_comandos_do_chat(update, context, "padrao")
@@ -113,7 +150,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mensagem.reply_text(
             f"👋 Sua configuração para {empresa_admin['nome']} já está ativa.\n\n"
             f"Use /painel para gerenciar o agente.\n"
-            f"Use /link para gerar o link dos clientes.\n"
+            f"Use /link para gerar os links de admin e cliente.\n"
             f"Use o Menu do Telegram ou /ajuda para ver os comandos.\n"
             f"{dica_teste}",
         )

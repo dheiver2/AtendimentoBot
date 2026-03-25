@@ -219,6 +219,16 @@ class MontarLinkAtendimentoTests(unittest.TestCase):
         link = _montar_link_atendimento("meu_bot", "token123")
         self.assertEqual(link, "https://t.me/meu_bot?start=token123")
 
+    def test_monta_link_admin(self):
+        from handlers.common import _montar_link_admin
+        link = _montar_link_admin("@meu_bot", "adm123")
+        self.assertEqual(link, "https://t.me/meu_bot?start=admin_adm123")
+
+    def test_extrai_token_link_admin(self):
+        from handlers.common import _extrair_token_link_admin
+        self.assertEqual(_extrair_token_link_admin("admin_adm123"), "adm123")
+        self.assertIsNone(_extrair_token_link_admin("abc123"))
+
 
 class EditarOuResponderTests(unittest.IsolatedAsyncioTestCase):
     async def test_sem_callback_responde_normalmente(self):

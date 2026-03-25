@@ -1,6 +1,8 @@
 "use strict";
 
 const SENT_MESSAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const DOWNLOADABLE_MEDIA_TYPES = new Set(["image", "document"]);
+const TEXT_EQUIVALENT_TYPES = new Set(["interactive", "buttons_response", "list_response"]);
 
 function normalizeWidSerialized(value) {
   if (!value) {
@@ -40,6 +42,18 @@ function getMessageId(message) {
   }
 
   return "";
+}
+
+function normalizeInboundMessageType(rawType, text) {
+  const messageType = String(rawType || "chat").trim().toLowerCase() || "chat";
+  if (TEXT_EQUIVALENT_TYPES.has(messageType) && String(text || "").trim()) {
+    return "chat";
+  }
+  return messageType;
+}
+
+function shouldDownloadInboundMedia(messageType) {
+  return DOWNLOADABLE_MEDIA_TYPES.has(String(messageType || "").trim().toLowerCase());
 }
 
 function pruneSentMessageIds(cache, now = Date.now()) {
@@ -117,6 +131,8 @@ async function shouldIgnoreMessage(message, ownWid, sentMessageIds, now = Date.n
 module.exports = {
   getMessageId,
   normalizeWidSerialized,
+  normalizeInboundMessageType,
   rememberSentMessage,
+  shouldDownloadInboundMedia,
   shouldIgnoreMessage,
 };

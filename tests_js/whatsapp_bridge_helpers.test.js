@@ -4,9 +4,22 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  normalizeInboundMessageType,
   rememberSentMessage,
+  shouldDownloadInboundMedia,
   shouldIgnoreMessage,
 } = require("../scripts/whatsapp_bridge_helpers");
+
+test("trata interactive com texto como chat", () => {
+  assert.equal(normalizeInboundMessageType("interactive", "Ola"), "chat");
+});
+
+test("so tenta baixar midia para tipos suportados", () => {
+  assert.equal(shouldDownloadInboundMedia("document"), true);
+  assert.equal(shouldDownloadInboundMedia("image"), true);
+  assert.equal(shouldDownloadInboundMedia("interactive"), false);
+  assert.equal(shouldDownloadInboundMedia("audio"), false);
+});
 
 test("permite mensagem recebida normalmente", async () => {
   const shouldIgnore = await shouldIgnoreMessage(

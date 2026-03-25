@@ -59,6 +59,22 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding._obter_payload_start", return_value="admin_adm123")
+    @patch("handlers.onboarding.obter_empresa_por_admin_link_token", return_value=None)
+    async def test_link_admin_invalido_informa_usuario(self, mock_link, mock_payload, mock_admin, mock_cliente, mock_sync):
+        from handlers.onboarding import cmd_start
+
+        update = make_update()
+        ctx = make_context()
+        result = await cmd_start(update, ctx)
+        self.assertEqual(result, ConversationHandler.END)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("link de admin", texto.lower())
+        self.assertIn("inválido", texto.lower())
+
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding._obter_payload_start", return_value="valid_token")
     @patch("handlers.onboarding.obter_empresa_por_link_token")
     @patch("handlers.onboarding.vincular_cliente_empresa", new_callable=AsyncMock)
@@ -77,6 +93,27 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding._obter_payload_start", return_value="admin_adm123")
+    @patch("handlers.onboarding.obter_empresa_por_admin_link_token")
+    @patch("handlers.onboarding.adicionar_admin_empresa", new_callable=AsyncMock)
+    async def test_link_admin_valido_vincula_admin(self, mock_add_admin, mock_link, mock_payload, mock_admin, mock_cliente, mock_sync):
+        from handlers.onboarding import cmd_start
+
+        mock_link.return_value = make_empresa(nome="AdminCorp", admin_link_token="adm123")
+        update = make_update()
+        ctx = make_context()
+        result = await cmd_start(update, ctx)
+
+        self.assertEqual(result, ConversationHandler.END)
+        mock_add_admin.assert_awaited_once_with(1, 100)
+        mock_sync.assert_awaited_once_with(update, ctx, "admin")
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("acesso de admin", texto.lower())
+        self.assertIn("AdminCorp", texto)
+
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding._obter_payload_start", return_value=None)
     async def test_novo_usuario_inicia_onboarding(self, mock_payload, mock_admin, mock_cliente, mock_sync):
         from handlers.common import AGUARDANDO_NOME_EMPRESA
@@ -86,6 +123,24 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
         ctx = make_context()
         result = await cmd_start(update, ctx)
         self.assertEqual(result, AGUARDANDO_NOME_EMPRESA)
+
+
+class CmdRegistrarTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.onboarding.obter_empresa_do_cliente")
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    async def test_cliente_vinculado_nao_inicia_onboarding(self, mock_admin, mock_cliente):
+        from handlers.onboarding import cmd_registrar
+
+        mock_cliente.return_value = make_empresa(nome="Acme")
+        update = make_update("/registrar")
+        ctx = make_context()
+
+        result = await cmd_registrar(update, ctx)
+
+        self.assertEqual(result, ConversationHandler.END)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("exclusivo do admin", texto.lower())
+        self.assertIn("apenas para conversar", texto.lower())
 
 
 class ReceberNomeEmpresaTests(unittest.IsolatedAsyncioTestCase):

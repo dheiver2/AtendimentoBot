@@ -43,6 +43,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empresa["horario_atendimento"], "Seg a Sex, 08h às 18h")
         self.assertEqual(empresa["fallback_contato"], "WhatsApp (11) 99999-9999")
         self.assertTrue(empresa["link_token"])
+        self.assertTrue(empresa["admin_link_token"])
 
     async def test_vincula_cliente_e_resolve_empresa_por_link(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
@@ -51,10 +52,16 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(empresa_admin)
         self.assertEqual(empresa_admin["id"], empresa_id)
         self.assertTrue(empresa_admin["link_token"])
+        self.assertTrue(empresa_admin["admin_link_token"])
 
         empresa_por_token = await database.obter_empresa_por_link_token(empresa_admin["link_token"])
+        empresa_por_token_admin = await database.obter_empresa_por_admin_link_token(
+            empresa_admin["admin_link_token"]
+        )
         self.assertIsNotNone(empresa_por_token)
+        self.assertIsNotNone(empresa_por_token_admin)
         self.assertEqual(empresa_por_token["id"], empresa_id)
+        self.assertEqual(empresa_por_token_admin["id"], empresa_id)
 
         await database.vincular_cliente_empresa(empresa_id, 99999)
 
@@ -70,6 +77,18 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(total_clientes, 1)
         self.assertEqual(admins, [12345])
         self.assertEqual(clientes, [99999])
+
+    async def test_adiciona_admin_secundario_na_mesma_empresa(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+
+        await database.adicionar_admin_empresa(empresa_id, 67890)
+
+        empresa_admin_secundario = await database.obter_empresa_por_admin(67890)
+        admins = await database.listar_ids_admins()
+
+        self.assertIsNotNone(empresa_admin_secundario)
+        self.assertEqual(empresa_admin_secundario["id"], empresa_id)
+        self.assertEqual(admins, [12345, 67890])
 
     async def test_migra_tabela_legada_clientes_empresa(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
