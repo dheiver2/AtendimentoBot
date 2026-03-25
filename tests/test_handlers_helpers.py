@@ -5,10 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import handlers.common as handlers_common
-from handlers.agent import (
+from agent_service import (
     _buscar_resposta_faq,
-    _detectar_pedido_humano,
-    _detectar_pergunta_horario,
     _formatar_resposta_pausado,
     _formatar_resposta_sem_base,
     _instrucoes_operacionais_empresa,
@@ -22,6 +20,7 @@ from handlers.common import (
 )
 from handlers.documents import _reindexar_base_empresa, _teclado_documentos
 from handlers.faq import _teclado_faqs
+from response_intelligence import detectar_pedido_humano, detectar_pergunta_horario
 
 
 class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
@@ -159,14 +158,14 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
                 handlers_common.IMAGES_DIR = original_images_dir
 
     def test_detectar_pedido_humano(self):
-        self.assertTrue(_detectar_pedido_humano("Quero falar com atendente"))
-        self.assertTrue(_detectar_pedido_humano("Tem WhatsApp?"))
-        self.assertFalse(_detectar_pedido_humano("Qual o preço do produto?"))
+        self.assertTrue(detectar_pedido_humano("Quero falar com atendente"))
+        self.assertTrue(detectar_pedido_humano("Tem WhatsApp?"))
+        self.assertFalse(detectar_pedido_humano("Qual o preço do produto?"))
 
     def test_detectar_pergunta_horario(self):
-        self.assertTrue(_detectar_pergunta_horario("Qual o horário de atendimento?"))
-        self.assertTrue(_detectar_pergunta_horario("Vocês estão aberto agora?"))
-        self.assertFalse(_detectar_pergunta_horario("Qual o preço?"))
+        self.assertTrue(detectar_pergunta_horario("Qual o horário de atendimento?"))
+        self.assertTrue(detectar_pergunta_horario("Vocês estão aberto agora?"))
+        self.assertFalse(detectar_pergunta_horario("Qual o preço?"))
 
     def test_formatar_resposta_pausado(self):
         empresa = {

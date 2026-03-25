@@ -39,6 +39,7 @@ from .common import (
     _mensagem_somente_admin,
     _obter_empresa_admin_ou_responder,
     _obter_payload_start,
+    _pode_iniciar_admin_telegram_sem_link,
     _remover_arquivos_empresa,
     _sincronizar_comandos_do_chat,
 )
@@ -164,6 +165,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await _sincronizar_comandos_do_chat(update, context, "padrao")
+    if not _pode_iniciar_admin_telegram_sem_link(user_id):
+        await mensagem.reply_text(
+            "👋 Este usuário ainda não foi vinculado a um atendimento.\n"
+            "Se você recebeu um link de admin, abra-o para liberar a gestão. "
+            "Se é cliente, abra o link enviado pelo atendimento."
+        )
+        return ConversationHandler.END
+
     return await _iniciar_onboarding(update, context)
 
 
@@ -181,6 +190,13 @@ async def cmd_registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if empresa_cliente:
         await update.message.reply_text(_mensagem_somente_admin())
+        return ConversationHandler.END
+
+    if not _pode_iniciar_admin_telegram_sem_link(user_id):
+        await update.message.reply_text(
+            "🔒 O cadastro e a configuração da empresa só podem ser feitos por um usuário autorizado como admin.\n"
+            "Se você chegou pelo link de atendimento, use este chat apenas para conversar."
+        )
         return ConversationHandler.END
 
     return await _iniciar_onboarding(update, context)

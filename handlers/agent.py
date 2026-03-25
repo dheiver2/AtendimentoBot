@@ -5,21 +5,18 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from agent_service import (
-    _buscar_resposta_faq,
-    _formatar_resposta_pausado,
-    _formatar_resposta_sem_base,
-    _instrucoes_operacionais_empresa,
-    _normalizar_texto,
     invalidar_cache_faq,
     processar_pergunta,
 )
 from database import listar_faqs, obter_empresa_do_usuario, registrar_conversa
 from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
-from response_intelligence import detectar_pedido_humano as _detectar_pedido_humano
-from response_intelligence import detectar_pergunta_horario as _detectar_pergunta_horario
 from validators import InputValidationError, validar_mensagem_usuario
 from vector_store import empresa_tem_documentos
+
+from .common import _pode_iniciar_admin_telegram_sem_link
+
+__all__ = ["interagir_com_agente", "invalidar_cache_faq"]
 
 
 async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, resposta: str):
@@ -45,10 +42,18 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
 
     empresa = await obter_empresa_do_usuario(user_id)
     if not empresa:
-        await update.message.reply_text(
-            "👋 Este atendimento ainda não está configurado para você.\n"
-            "Se você é o admin, envie /start. Se é cliente, abra o link recebido do atendimento."
-        )
+        if _pode_iniciar_admin_telegram_sem_link(user_id):
+            mensagem = (
+                "👋 Este atendimento ainda não está configurado para você.\n"
+                "Seu usuário está autorizado como admin. Envie /start para iniciar a configuração."
+            )
+        else:
+            mensagem = (
+                "👋 Este atendimento ainda não está configurado para você.\n"
+                "Se você recebeu um link de admin, abra-o para liberar a gestão. "
+                "Se é cliente, abra o link recebido do atendimento."
+            )
+        await update.message.reply_text(mensagem)
         return
 
     await update.message.chat.send_action("typing")

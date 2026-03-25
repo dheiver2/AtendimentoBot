@@ -1,4 +1,5 @@
 """Testes para handlers/agent.py — interação com o agente RAG."""
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -41,6 +42,21 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         ctx = make_context()
         await interagir_com_agente(update, ctx)
         self.assertIn("não está configurado", update.message.reply_text.call_args[0][0])
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="Qual o preço?")
+    @patch("handlers.agent.obter_empresa_do_usuario", return_value=None)
+    async def test_usuario_sem_empresa_com_allowlist_exige_link_admin(self, mock_emp, mock_val, mock_rate):
+        from handlers.agent import interagir_com_agente
+
+        update = make_update("Qual o preço?", user_id=100)
+        ctx = make_context()
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            await interagir_com_agente(update, ctx)
+
+        texto = update.message.reply_text.call_args[0][0]
+        self.assertIn("link de admin", texto.lower())
+        self.assertNotIn("envie /start", texto.lower())
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="Oi")

@@ -1,4 +1,5 @@
 """Testes do fluxo conversacional do WhatsApp."""
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -46,6 +47,52 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
         mock_bind.assert_not_awaited()
         self.assertIn("nao entra pelo link do cliente", actions[0]["text"].lower())
         self.assertIn("nome da sua empresa", actions[0]["text"].lower())
+
+    async def test_start_numero_autorizado_por_lista_inicia_onboarding_sem_owner_chat(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        with patch.dict(os.environ, {"WHATSAPP_ADMIN_NUMBERS": "5511888888888"}, clear=False):
+            with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+                with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=None):
+                    actions = await processar_mensagem_whatsapp(
+                        sender="5511888888888@c.us",
+                        text="/start",
+                        message_type="chat",
+                        resolve_default_company=AsyncMock(return_value=None),
+                    )
+
+        self.assertEqual(len(actions), 1)
+        self.assertIn("nome da sua empresa", actions[0]["text"].lower())
+
+    async def test_start_owner_chat_com_lista_configurada_pode_usar_token_cliente(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        with patch.dict(os.environ, {"WHATSAPP_ADMIN_NUMBERS": "5511888888888"}, clear=False):
+            with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+                with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=None):
+                    with patch(
+                        "whatsapp_flow.obter_empresa_por_link_token",
+                        new_callable=AsyncMock,
+                        return_value=make_empresa(link_token="abc123"),
+                    ):
+                        with patch(
+                            "whatsapp_flow.vincular_cliente_empresa",
+                            new_callable=AsyncMock,
+                        ) as mock_bind:
+                            with patch(
+                                "whatsapp_flow._make_welcome_actions",
+                                return_value=[{"type": "text", "text": "bem-vindo"}],
+                            ):
+                                actions = await processar_mensagem_whatsapp(
+                                    sender="5511999999999@c.us",
+                                    text="/start abc123",
+                                    message_type="chat",
+                                    is_owner_chat=True,
+                                    resolve_default_company=AsyncMock(return_value=None),
+                                )
+
+        mock_bind.assert_awaited_once_with(1, -5511999999999)
+        self.assertEqual(actions, [{"type": "text", "text": "bem-vindo"}])
 
     async def test_onboarding_completo_cria_empresa(self):
         from whatsapp_flow import processar_mensagem_whatsapp
@@ -170,7 +217,7 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
                     resolve_default_company=AsyncMock(return_value=None),
                 )
 
-        self.assertIn("so podem ser feitos pelo numero conectado como admin", actions[0]["text"].lower())
+        self.assertIn("so podem ser feitos por um numero autorizado como admin", actions[0]["text"].lower())
         self.assertNotIn("qual e o nome da sua empresa", actions[0]["text"].lower())
 
     async def test_cliente_vinculado_nao_pode_usar_link(self):
@@ -270,6 +317,29 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(actions), 1)
         self.assertIn("nome da sua empresa", actions[0]["text"].lower())
+
+    async def test_texto_owner_chat_com_lista_configurada_sem_autorizacao_nao_inicia_onboarding(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        empresas = [
+            make_empresa(empresa_id=1, nome="Acme"),
+            make_empresa(empresa_id=2, nome="Beta"),
+        ]
+        with patch.dict(os.environ, {"WHATSAPP_ADMIN_NUMBERS": "5511888888888"}, clear=False):
+            with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+                with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=None):
+                    with patch("whatsapp_flow.obter_empresa_do_usuario", new_callable=AsyncMock, return_value=None):
+                        with patch("whatsapp_flow.listar_empresas", new_callable=AsyncMock, return_value=empresas):
+                            actions = await processar_mensagem_whatsapp(
+                                sender="5511999999999@c.us",
+                                text="Oi",
+                                message_type="chat",
+                                is_owner_chat=True,
+                                resolve_default_company=AsyncMock(return_value=None),
+                            )
+
+        self.assertEqual(len(actions), 1)
+        self.assertIn("escolha a empresa", actions[0]["text"].lower())
 
     async def test_cliente_externo_texto_auto_vincula_empresa_padrao(self):
         from whatsapp_flow import processar_mensagem_whatsapp

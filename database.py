@@ -117,7 +117,7 @@ async def _criar_tabela_clientes_empresa(db: aiosqlite.Connection):
 
 async def _recriar_tabela_clientes_empresa(db: aiosqlite.Connection, colunas_existentes: set[str]):
     """Recria a tabela de clientes preservando dados de schemas antigos."""
-    await db.execute("ALTER TABLE clientes_empresa RENAME TO clientes_empresa_legado")
+    await db.execute("ALTER TABLE clientes_empresa RENAME TO clientes_empresa_migracao")
     await _criar_tabela_clientes_empresa(db)
 
     coluna_usuario = (
@@ -143,10 +143,10 @@ async def _recriar_tabela_clientes_empresa(db: aiosqlite.Connection, colunas_exi
         f"""
         INSERT OR IGNORE INTO clientes_empresa ({", ".join(colunas_destino)})
         SELECT {", ".join(colunas_origem)}
-        FROM clientes_empresa_legado
+        FROM clientes_empresa_migracao
         """
     )
-    await db.execute("DROP TABLE clientes_empresa_legado")
+    await db.execute("DROP TABLE clientes_empresa_migracao")
 
 
 async def _garantir_tabela_clientes_empresa(db: aiosqlite.Connection):
@@ -336,11 +336,6 @@ async def obter_empresa_por_admin(telegram_user_id: int) -> dict | None:
         if row:
             return dict(row)
         return None
-
-
-async def obter_empresa_por_usuario(telegram_user_id: int) -> dict | None:
-    """Mantém compatibilidade buscando a empresa do admin pelo usuário."""
-    return await obter_empresa_por_admin(telegram_user_id)
 
 
 async def obter_empresa_por_id(empresa_id: int) -> dict | None:

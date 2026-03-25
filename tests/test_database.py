@@ -31,7 +31,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             fallback_contato="WhatsApp (11) 99999-9999",
         )
 
-        empresa = await database.obter_empresa_por_usuario(12345)
+        empresa = await database.obter_empresa_por_admin(12345)
 
         self.assertIsNotNone(empresa)
         self.assertEqual(empresa["id"], empresa_id)
@@ -159,7 +159,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await database.registrar_documento(empresa_id, "novo.txt")
         await database.excluir_empresa_com_dados(empresa_id)
 
-        empresa = await database.obter_empresa_por_usuario(12345)
+        empresa = await database.obter_empresa_por_admin(12345)
         empresa_cliente = await database.obter_empresa_do_cliente(777)
         documentos = await database.listar_documentos(empresa_id)
 

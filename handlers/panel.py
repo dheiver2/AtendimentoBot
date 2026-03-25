@@ -20,6 +20,7 @@ from vector_store import empresa_tem_documentos
 from .common import (
     _enviar_preview_imagem_empresa,
     _obter_empresa_admin_ou_responder,
+    _pode_iniciar_admin_telegram_sem_link,
     _teclado_painel,
 )
 
@@ -156,12 +157,17 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Se precisar de um novo acesso, peça o link novamente ao atendimento."
         )
     else:
+        pode_iniciar_admin_sem_link = _pode_iniciar_admin_telegram_sem_link(user_id)
         texto = (
             "👋 Este bot possui dois perfis:\n\n"
             "- admin: configura a empresa, documentos, FAQ e horário\n"
             "- cliente: usa apenas o link enviado pelo admin para conversar\n\n"
             "Use /meuid para descobrir seu ID do Telegram.\n"
-            "Se você é o admin, envie /start para iniciar a configuração."
+            + (
+                "Seu usuário está autorizado como admin. Envie /start para iniciar a configuração."
+                if pode_iniciar_admin_sem_link
+                else "Se você recebeu um link de admin, abra-o para liberar a gestão. Se é cliente, use o link enviado pelo atendimento."
+            )
         )
     await mensagem.reply_text(texto)
 

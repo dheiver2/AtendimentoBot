@@ -28,9 +28,9 @@ from database import (
     excluir_documento,
     excluir_empresa_com_dados,
     excluir_faq,
-    listar_empresas,
     limpar_faqs,
     listar_documentos,
+    listar_empresas,
     listar_faqs,
     obter_documento_por_id,
     obter_empresa_do_cliente,
@@ -136,14 +136,43 @@ class WhatsAppSession:
 _sessions: dict[str, WhatsAppSession] = {}
 
 
+def _coerce_whatsapp_digits(raw_value: str) -> str:
+    return "".join(char for char in (raw_value or "") if char.isdigit())
+
+
 def _coerce_whatsapp_user_id(raw_value: str) -> int:
-    digits = "".join(char for char in (raw_value or "") if char.isdigit())
+    digits = _coerce_whatsapp_digits(raw_value)
     if digits:
         value = int(digits)
         return -(value or 1)
 
     digest = hashlib.sha256((raw_value or "").encode("utf-8")).hexdigest()
     return -int(digest[:15], 16)
+
+
+def _whatsapp_admin_numbers() -> set[str]:
+    raw_value = (os.getenv("WHATSAPP_ADMIN_NUMBERS") or "").strip()
+    if not raw_value:
+        return set()
+
+    normalized = raw_value.replace("\n", ",").replace(";", ",")
+    numbers: set[str] = set()
+    for chunk in normalized.split(","):
+        digits = _coerce_whatsapp_digits(chunk)
+        if digits:
+            numbers.add(digits)
+    return numbers
+
+
+def _pode_iniciar_admin_sem_link(sender: str, *, is_owner_chat: bool) -> bool:
+    numeros_admin = _whatsapp_admin_numbers()
+    if numeros_admin:
+        return _coerce_whatsapp_digits(sender) in numeros_admin
+    return is_owner_chat
+
+
+def _usa_bootstrap_owner_chat_padrao(*, is_owner_chat: bool) -> bool:
+    return is_owner_chat and not _whatsapp_admin_numbers()
 
 
 def _touch_session(sender: str) -> WhatsAppSession:
@@ -897,6 +926,12 @@ async def _cmd_start(
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = await obter_empresa_do_cliente(user_id)
     formatos = listar_formatos_suportados()
+    pode_iniciar_admin_sem_link = _pode_iniciar_admin_sem_link(
+        sender, is_owner_chat=is_owner_chat
+    )
+    usa_bootstrap_owner_chat_padrao = _usa_bootstrap_owner_chat_padrao(
+        is_owner_chat=is_owner_chat
+    )
 
     admin_link_token = _extrair_token_link_admin(payload)
     if admin_link_token:
@@ -924,12 +959,13 @@ async def _cmd_start(
             )
         ]
 
-    if is_owner_chat and not empresa_admin:
-        if payload:
-            return _iniciar_onboarding_admin(
-                session,
-                prefixo="🔒 Este numero conectado como admin nao entra pelo link do cliente.",
-            )
+    if payload and usa_bootstrap_owner_chat_padrao and not empresa_admin:
+        return _iniciar_onboarding_admin(
+            session,
+            prefixo="🔒 Este numero conectado como admin nao entra pelo link do cliente.",
+        )
+
+    if not payload and pode_iniciar_admin_sem_link and not empresa_admin:
         return _iniciar_onboarding_admin(session)
 
     if payload:
@@ -977,7 +1013,7 @@ async def _cmd_start(
         _clear_session(session)
         return _make_welcome_actions(empresa_cliente, session)
 
-    if not is_owner_chat:
+    if not pode_iniciar_admin_sem_link:
         empresa_padrao = await resolve_default_company()
         if empresa_padrao:
             return await _vincular_cliente_e_responder(
@@ -1010,6 +1046,7 @@ async def _cmd_start(
 
 async def _cmd_registrar(
     *,
+    sender: str,
     user_id: int,
     session: WhatsAppSession,
     is_owner_chat: bool,
@@ -1025,10 +1062,10 @@ async def _cmd_registrar(
         ]
     if empresa_cliente:
         return [_make_text_action(_mensagem_somente_admin())]
-    if not is_owner_chat:
+    if not _pode_iniciar_admin_sem_link(sender, is_owner_chat=is_owner_chat):
         return [
             _make_text_action(
-                "🔒 O cadastro e a configuracao da empresa so podem ser feitos pelo numero conectado como admin.\n"
+                "🔒 O cadastro e a configuracao da empresa so podem ser feitos por um numero autorizado como admin.\n"
                 "Se voce chegou pelo link de atendimento, use este chat apenas para conversar."
             )
         ]
@@ -1059,7 +1096,12 @@ async def _cmd_sair(*, user_id: int, session: WhatsAppSession) -> list[dict[str,
     ]
 
 
-async def _cmd_ajuda(*, user_id: int, is_owner_chat: bool) -> list[dict[str, str]]:
+async def _cmd_ajuda(
+    *,
+    sender: str,
+    user_id: int,
+    is_owner_chat: bool,
+) -> list[dict[str, str]]:
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = await obter_empresa_do_cliente(user_id)
     formatos = listar_formatos_suportados()
@@ -1095,13 +1137,16 @@ async def _cmd_ajuda(*, user_id: int, is_owner_chat: bool) -> list[dict[str, str
             "Se quiser trocar de empresa, use /empresas. Se quiser sair, use /sair."
         )
     else:
+        pode_iniciar_admin_sem_link = _pode_iniciar_admin_sem_link(
+            sender, is_owner_chat=is_owner_chat
+        )
         texto = (
             "👋 Este atendimento possui dois perfis:\n\n"
             "- admin: configura empresa, documentos, FAQ e horario\n"
             "- cliente: escolhe a empresa e conversa normalmente\n\n"
             + (
-                "Como este e o numero conectado no WhatsApp, use /start para configurar o admin."
-                if is_owner_chat
+                "Seu numero esta autorizado como admin. Use /start para configurar uma empresa."
+                if pode_iniciar_admin_sem_link
                 else "Se voce recebeu um link de admin, abra-o para liberar a gestao. Se voce e cliente, envie /empresas para escolher a empresa ou /start TOKEN se recebeu um acesso direto."
             )
         )
@@ -1202,6 +1247,7 @@ async def _cmd_link(
 
 async def _cmd_empresas(
     *,
+    sender: str,
     user_id: int,
     session: WhatsAppSession,
     resolve_default_company: DefaultCompanyResolver,
@@ -1218,12 +1264,15 @@ async def _cmd_empresas(
 
     empresas = await listar_empresas()
     if not empresas:
+        pode_iniciar_admin_sem_link = _pode_iniciar_admin_sem_link(
+            sender, is_owner_chat=is_owner_chat
+        )
         return [
             _make_text_action(
                 "👋 Ainda nao existem empresas disponiveis neste WhatsApp.\n"
                 + (
                     "Use /start para configurar a primeira empresa."
-                    if is_owner_chat
+                    if pode_iniciar_admin_sem_link
                     else "Aguarde o admin concluir a configuracao."
                 )
             )
@@ -1857,6 +1906,7 @@ async def processar_mensagem_whatsapp(
             )
         if comando == "registrar":
             return await _cmd_registrar(
+                sender=sender,
                 user_id=user_id,
                 session=session,
                 is_owner_chat=is_owner_chat,
@@ -1864,9 +1914,14 @@ async def processar_mensagem_whatsapp(
         if comando == "sair":
             return await _cmd_sair(user_id=user_id, session=session)
         if comando == "ajuda":
-            return await _cmd_ajuda(user_id=user_id, is_owner_chat=is_owner_chat)
+            return await _cmd_ajuda(
+                sender=sender,
+                user_id=user_id,
+                is_owner_chat=is_owner_chat,
+            )
         if comando in {"empresas", "trocar", "trocar_empresa"}:
             return await _cmd_empresas(
+                sender=sender,
                 user_id=user_id,
                 session=session,
                 resolve_default_company=resolve_default_company,
@@ -1925,14 +1980,17 @@ async def processar_mensagem_whatsapp(
 
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = None if empresa_admin else await obter_empresa_do_cliente(user_id)
-    if is_owner_chat and not empresa_admin and not empresa_cliente:
+    pode_iniciar_admin_sem_link = _pode_iniciar_admin_sem_link(
+        sender, is_owner_chat=is_owner_chat
+    )
+    if pode_iniciar_admin_sem_link and not empresa_admin and not empresa_cliente:
         return await _cmd_start(
             sender=sender,
             user_id=user_id,
             args=[],
             session=session,
             resolve_default_company=resolve_default_company,
-            is_owner_chat=True,
+            is_owner_chat=is_owner_chat,
         )
 
     if message_type == "document" and media_bytes and empresa_admin:
@@ -1955,5 +2013,5 @@ async def processar_mensagem_whatsapp(
         user_id=user_id,
         text=texto,
         resolve_default_company=resolve_default_company,
-        auto_bind_default_company=not is_owner_chat,
+        auto_bind_default_company=not pode_iniciar_admin_sem_link,
     )

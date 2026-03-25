@@ -74,6 +74,41 @@ def _extrair_token_link_admin(payload: str | None) -> str | None:
     return token or None
 
 
+def _telegram_admin_ids() -> set[int]:
+    """Lista IDs autorizados a iniciar o onboarding/admin sem link."""
+    raw_value = (os.getenv("TELEGRAM_ADMIN_IDS") or "").strip()
+    if not raw_value:
+        return set()
+
+    normalized = raw_value.replace("\n", ",").replace(";", ",")
+    ids: set[int] = set()
+    for chunk in normalized.split(","):
+        valor = chunk.strip()
+        if valor and valor.lstrip("-").isdigit():
+            ids.add(int(valor))
+    return ids
+
+
+def _pode_iniciar_admin_telegram_sem_link(user_id: int) -> bool:
+    """Decide se o usuário pode abrir onboarding/admin sem deep link."""
+    admin_ids = _telegram_admin_ids()
+    if admin_ids:
+        return user_id in admin_ids
+    return True
+
+
+def _mensagem_admin_telegram_nao_configurado(user_id: int) -> str:
+    """Mensagem padrão para usuários sem empresa/admin resolvido no Telegram."""
+    if _pode_iniciar_admin_telegram_sem_link(user_id):
+        return "❌ Seu agente ainda não foi configurado. Use /start primeiro."
+
+    return (
+        "❌ Este usuário ainda não tem acesso de gestão.\n"
+        "Se você recebeu um link de admin, abra-o para liberar a gestão. "
+        "Se é cliente, abra o link enviado pelo atendimento."
+    )
+
+
 def _remover_arquivos_empresa(empresa_id: int):
     """Apaga documentos e vector store da empresa resetada."""
     for diretorio_base in [PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
@@ -141,7 +176,8 @@ async def _obter_empresa_admin_ou_responder(
         return None
 
     await update.effective_message.reply_text(
-        mensagem_nao_configurado or "❌ Seu agente ainda não foi configurado. Use /start primeiro."
+        mensagem_nao_configurado
+        or _mensagem_admin_telegram_nao_configurado(update.effective_user.id)
     )
     return None
 

@@ -1,4 +1,5 @@
 """Testes para handlers/onboarding.py — registro de empresa."""
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -124,6 +125,38 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
         result = await cmd_start(update, ctx)
         self.assertEqual(result, AGUARDANDO_NOME_EMPRESA)
 
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding._obter_payload_start", return_value=None)
+    async def test_usuario_nao_autorizado_nao_inicia_onboarding_sem_link(self, mock_payload, mock_admin, mock_cliente, mock_sync):
+        from handlers.onboarding import cmd_start
+
+        update = make_update(user_id=100)
+        ctx = make_context()
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            result = await cmd_start(update, ctx)
+
+        self.assertEqual(result, ConversationHandler.END)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("link de admin", texto.lower())
+        self.assertNotIn("nome da sua empresa", texto.lower())
+
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding._obter_payload_start", return_value=None)
+    async def test_usuario_autorizado_por_lista_inicia_onboarding(self, mock_payload, mock_admin, mock_cliente, mock_sync):
+        from handlers.common import AGUARDANDO_NOME_EMPRESA
+        from handlers.onboarding import cmd_start
+
+        update = make_update(user_id=999)
+        ctx = make_context()
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            result = await cmd_start(update, ctx)
+
+        self.assertEqual(result, AGUARDANDO_NOME_EMPRESA)
+
 
 class CmdRegistrarTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding.obter_empresa_do_cliente")
@@ -141,6 +174,21 @@ class CmdRegistrarTests(unittest.IsolatedAsyncioTestCase):
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("exclusivo do admin", texto.lower())
         self.assertIn("apenas para conversar", texto.lower())
+
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    async def test_usuario_nao_autorizado_nao_inicia_registro_admin(self, mock_admin, mock_cliente):
+        from handlers.onboarding import cmd_registrar
+
+        update = make_update("/registrar", user_id=100)
+        ctx = make_context()
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            result = await cmd_registrar(update, ctx)
+
+        self.assertEqual(result, ConversationHandler.END)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("usuário autorizado como admin", texto)
+        self.assertNotIn("nome da sua empresa", texto.lower())
 
 
 class ReceberNomeEmpresaTests(unittest.IsolatedAsyncioTestCase):

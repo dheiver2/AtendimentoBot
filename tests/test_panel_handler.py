@@ -1,4 +1,5 @@
 """Testes para handlers/panel.py — painel, ajuda, link, status."""
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -83,6 +84,20 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("/start", texto)
         self.assertIn("/meuid", texto)
+
+    @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.panel.obter_empresa_do_cliente", return_value=None)
+    async def test_ajuda_desconhecido_com_allowlist_exige_link_admin(self, mock_cliente, mock_admin):
+        from handlers.panel import cmd_ajuda
+
+        update = make_update(user_id=100)
+        ctx = make_context()
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            await cmd_ajuda(update, ctx)
+
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("link de admin", texto.lower())
+        self.assertNotIn("envie /start para iniciar a configuração", texto.lower())
 
 
 class CmdMeuIdTests(unittest.IsolatedAsyncioTestCase):

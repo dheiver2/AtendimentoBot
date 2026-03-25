@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.coverage
+.coverage.*
 
 # ── Ambientes virtuais ──
 .venv/
@@ -30,6 +32,9 @@ node_modules/
 tmp_*
 *.tmp
 *.bak
+
+# ── Ferramentas locais ──
+.claude/
 
 # ── IDE (extensões pessoais) ──
 *.code-workspace

@@ -74,6 +74,20 @@ class ObterEmpresaAdminOuResponderTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.common.obter_empresa_por_admin", return_value=None)
     @patch("handlers.common.obter_empresa_do_cliente", return_value=None)
+    async def test_usuario_desconhecido_com_allowlist_exige_link_admin(self, mock_cliente, mock_admin):
+        from handlers.common import _obter_empresa_admin_ou_responder
+
+        update = make_update(user_id=100)
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            resultado = await _obter_empresa_admin_ou_responder(update)
+
+        self.assertIsNone(resultado)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("link de admin", texto.lower())
+        self.assertNotIn("/start primeiro", texto.lower())
+
+    @patch("handlers.common.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.common.obter_empresa_do_cliente", return_value=None)
     async def test_mensagem_personalizada(self, mock_cliente, mock_admin):
         from handlers.common import _obter_empresa_admin_ou_responder
         update = make_update()
