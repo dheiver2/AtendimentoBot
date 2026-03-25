@@ -1,4 +1,5 @@
 """Testes para main.py — error_handler e configuração."""
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,19 +47,18 @@ class ErrorHandlerTests(unittest.IsolatedAsyncioTestCase):
         await error_handler(object(), ctx)
 
 
-class RunAsyncTests(unittest.TestCase):
-    def test_run_async_usa_asyncio_runner(self):
-        from main import _run_async
+class MainEventLoopTests(unittest.TestCase):
+    def test_create_main_event_loop_define_loop_corrente(self):
+        from main import _create_main_event_loop
 
-        awaitable = object()
-        with patch("main.asyncio.Runner") as mock_runner_cls:
-            runner = mock_runner_cls.return_value.__enter__.return_value
-            runner.run.return_value = "ok"
-
-            result = _run_async(awaitable)
-
-        self.assertEqual(result, "ok")
-        runner.run.assert_called_once_with(awaitable)
+        loop = _create_main_event_loop()
+        try:
+            current_loop = asyncio.get_event_loop_policy().get_event_loop()
+            self.assertIs(current_loop, loop)
+        finally:
+            if not loop.is_closed():
+                loop.close()
+            asyncio.set_event_loop(None)
 
 
 class MainFunctionTests(unittest.TestCase):

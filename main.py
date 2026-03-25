@@ -3,7 +3,6 @@ import asyncio
 import logging
 import os
 import time
-from typing import Awaitable, TypeVar
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -30,13 +29,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
 
-
-def _run_async(coro: Awaitable[T]) -> T:
-    """Executa uma coroutine em um runner isolado para inicializações síncronas."""
-    with asyncio.Runner() as runner:
-        return runner.run(coro)
+def _create_main_event_loop() -> asyncio.AbstractEventLoop:
+    """Cria e registra o loop principal esperado pelo PTB em Python 3.12+."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -96,49 +94,50 @@ def main():
             "Configure TELEGRAM_BOT_TOKEN no .env ou habilite WHATSAPP_WEB_ENABLED=1."
         )
 
-    _run_async(init_db())
+    main_event_loop = _create_main_event_loop()
     whatsapp_server: WhatsAppWebBridgeServer | None = None
 
-    if whatsapp_settings.enabled:
-        whatsapp_server = WhatsAppWebBridgeServer(whatsapp_settings)
-        whatsapp_server.start_background()
-        launch_whatsapp_client_in_new_terminal(whatsapp_settings)
+    try:
+        main_event_loop.run_until_complete(init_db())
 
-    if not token:
-        if whatsapp_server is None:
-            raise ValueError("Nenhum canal de atendimento foi configurado.")
+        if whatsapp_settings.enabled:
+            whatsapp_server = WhatsAppWebBridgeServer(whatsapp_settings)
+            whatsapp_server.start_background()
+            launch_whatsapp_client_in_new_terminal(whatsapp_settings)
 
-        logger.info(
-            "AtendimentoBot v%s iniciado apenas com WhatsApp Web. Pressione Ctrl+C para parar.",
-            BOT_VERSION,
-        )
-        try:
+        if not token:
+            if whatsapp_server is None:
+                raise ValueError("Nenhum canal de atendimento foi configurado.")
+
+            logger.info(
+                "AtendimentoBot v%s iniciado apenas com WhatsApp Web. Pressione Ctrl+C para parar.",
+                BOT_VERSION,
+            )
             while True:
                 time.sleep(1)
-        finally:
-            whatsapp_server.shutdown()
-        return
 
-    app = ApplicationBuilder().token(token).post_init(post_init).build()
-    app.add_error_handler(error_handler)
+        app = ApplicationBuilder().token(token).post_init(post_init).build()
+        app.add_error_handler(error_handler)
 
-    for handler in get_handlers():
-        app.add_handler(handler)
+        for handler in get_handlers():
+            app.add_handler(handler)
 
-    if whatsapp_server is not None:
-        logger.info(
-            "Bridge local do WhatsApp habilitado em http://%s:%s%s",
-            whatsapp_settings.bridge_host,
-            whatsapp_settings.bridge_port,
-            whatsapp_settings.bridge_path,
-        )
+        if whatsapp_server is not None:
+            logger.info(
+                "Bridge local do WhatsApp habilitado em http://%s:%s%s",
+                whatsapp_settings.bridge_host,
+                whatsapp_settings.bridge_port,
+                whatsapp_settings.bridge_path,
+            )
 
-    logger.info("AtendimentoBot v%s iniciado! Pressione Ctrl+C para parar.", BOT_VERSION)
-    try:
+        logger.info("AtendimentoBot v%s iniciado! Pressione Ctrl+C para parar.", BOT_VERSION)
         app.run_polling(drop_pending_updates=True)
     finally:
         if whatsapp_server is not None:
             whatsapp_server.shutdown()
+        if not main_event_loop.is_closed():
+            main_event_loop.close()
+        asyncio.set_event_loop(None)
 
 
 if __name__ == "__main__":
