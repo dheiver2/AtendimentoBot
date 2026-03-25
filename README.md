@@ -1,6 +1,6 @@
 # AtendimentoBot
 
-Bot de atendimento ao cliente com RAG (Retrieval-Augmented Generation), onboarding via Telegram e suporte opcional ao WhatsApp Web por QR code.
+Bot de atendimento ao cliente com RAG (Retrieval-Augmented Generation), onboarding e atendimento via Telegram e suporte opcional ao WhatsApp Web por QR code.
 
 Perfis atuais:
 
@@ -25,7 +25,7 @@ Perfis atuais:
 - Reenvio da identidade visual na primeira interação do cliente
 - Horário de atendimento e fallback para atendimento humano
 - Pausar/ativar agente por usuário
-- Deep links para vincular clientes ao atendimento
+- Tokens e links para vincular clientes ao atendimento
 - Menu de comandos dinâmico por perfil (admin vs cliente)
 - Histórico de conversas registrado em banco de dados
 - Validação e sanitização de entradas do usuário
@@ -45,6 +45,7 @@ document_processor.py    → Extração de texto multi-formato
 bot_profile_photo.py     → Gestão de imagens do agente
 telegram_commands.py     → Menu nativo do Telegram por perfil
 whatsapp_web_bridge.py   → Bridge HTTP local entre Python e WhatsApp Web
+whatsapp_flow.py         → Fluxo conversacional e comandos do WhatsApp
 scripts/whatsapp_bridge.js → Cliente do WhatsApp Web com QR code em terminal separado
 validators.py            → Validação e sanitização de entradas
 rate_limiter.py          → Rate limiting em memória por usuário
@@ -122,14 +123,16 @@ WHATSAPP_WEB_SESSION_DIR=data/whatsapp-web-session
 
 ### WhatsApp Web
 
-O projeto agora consegue responder mensagens recebidas pelo WhatsApp Web usando a mesma base RAG do Telegram.
+O projeto consegue operar no WhatsApp Web com paridade funcional ao fluxo principal: onboarding, configuração, FAQ, upload de documentos, imagem do agente, horário, fallback, status, reset e atendimento RAG.
 
 Como funciona hoje:
 
-- O Telegram continua sendo o canal administrativo para onboarding, documentos, FAQ e ajustes do agente.
-- O WhatsApp usa a empresa cadastrada no banco para responder clientes conectados pela sessao local do WhatsApp Web.
-- Se existir apenas uma empresa cadastrada, ela sera usada automaticamente no WhatsApp.
-- Se existir mais de uma empresa, defina `WHATSAPP_DEFAULT_COMPANY_ID` ou `WHATSAPP_DEFAULT_COMPANY_LINK_TOKEN` no `.env`.
+- O Telegram continua funcionando normalmente com painel, callbacks e menu nativo.
+- O WhatsApp expõe os mesmos fluxos por comandos de texto e mensagens de mídia.
+- Admins podem configurar empresa, documentos, FAQ, imagem, horário, fallback e edições diretamente pelo WhatsApp.
+- Clientes entram no atendimento enviando `/start TOKEN` para o mesmo número conectado no WhatsApp Web.
+- Se existir apenas uma empresa cadastrada, o bridge ainda pode responder clientes sem vínculo explícito.
+- Se existir mais de uma empresa, defina `WHATSAPP_DEFAULT_COMPANY_ID` ou `WHATSAPP_DEFAULT_COMPANY_LINK_TOKEN` no `.env` para o fallback automático.
 
 Passo a passo:
 
@@ -139,13 +142,16 @@ Passo a passo:
 4. O app inicia o bridge Python e tenta abrir `npm run whatsapp:bridge` em um novo terminal.
 5. Escaneie o QR code exibido nesse novo terminal.
 6. Depois da primeira autenticacao, a sessao fica salva em `data/whatsapp-web-session`.
+7. Para administrar pelo WhatsApp, use comandos como `/start`, `/painel`, `/upload`, `/faq`, `/imagem`, `/status` e `/link`.
+8. Para clientes, gere o token com `/link` e oriente o envio de `/start TOKEN`.
 
 Observacoes:
 
 - O terminal do WhatsApp precisa continuar aberto enquanto o atendimento estiver ativo.
 - Se o novo terminal nao abrir automaticamente, execute `npm run whatsapp:bridge` manualmente em outro terminal.
-- O bridge atual responde apenas mensagens de texto em conversas diretas. Grupos e anexos sao ignorados ou recebem resposta padrao.
-- Se voce ativar apenas o WhatsApp e nao usar Telegram, o app sobe somente o bridge local. Nesse modo, a empresa precisa ja existir no banco.
+- O bridge atual trata texto, imagens do fluxo `/imagem` e documentos do fluxo `/upload` ou envio direto do admin.
+- Conversas em grupo, newsletters e tipos de mídia nao tratados continuam fora do escopo.
+- Se voce ativar apenas o WhatsApp e nao usar Telegram, o app continua permitindo onboarding e gerenciamento pelo proprio WhatsApp.
 
 ## Personalização Por Empresa
 
@@ -227,21 +233,21 @@ O binário final fica em `dist/AtendimentoBot`.
 
 ## Uso
 
-1. O admin abre o bot no Telegram e envia `/start`
-2. O admin faz o onboarding da empresa (nome, assistente, saudação, instruções)
-3. O admin envia documentos, configura FAQ, horário, fallback e imagem
-4. O admin usa `/link` para gerar o link dos clientes
-5. O admin envia esse link aos clientes
-6. O cliente abre o link e usa o bot somente para conversar
+1. O admin pode iniciar pelo Telegram ou pelo WhatsApp com `/start`
+2. O admin faz o onboarding da empresa, envia documentos e ajusta FAQ, imagem, horário e fallback
+3. O admin usa `/link` para gerar o acesso dos clientes
+4. No Telegram, o cliente entra pelo deep link
+5. No WhatsApp, o cliente envia `/start TOKEN`
+6. Depois do vínculo, o cliente usa o chat apenas para conversar com o agente
 
 ## Comandos
 
 | Comando | Descrição |
 |---------|-----------|
-| `/start` | Iniciar configuração (admin) ou abrir atendimento (cliente) |
-| `/meuid` | Mostrar o ID do Telegram do usuário atual |
+| `/start` | Iniciar configuração (admin) ou abrir atendimento (cliente com token) |
+| `/meuid` | Mostrar o identificador do usuário atual |
 | `/painel` | Painel de gerenciamento com todas as opções |
-| `/link` | Gerar o link de atendimento para clientes |
+| `/link` | Gerar o acesso de atendimento para clientes |
 | `/upload` | Enviar novos documentos |
 | `/documentos` | Gerenciar a base de conhecimento |
 | `/imagem` | Atualizar a imagem do agente |
@@ -255,7 +261,7 @@ O binário final fica em `dist/AtendimentoBot`.
 | `/reset` | Reconfigurar do zero |
 | `/ajuda` | Ver ajuda rápida |
 
-Clientes não usam comandos de gestão. Depois de entrarem pelo link, o menu `/` mostra apenas as opções básicas do cliente, incluindo `/meuid` para informar o próprio ID quando necessário.
+No WhatsApp, os fluxos administrativos usam comandos de texto em vez de botões inline. Clientes não usam comandos de gestão; depois do vínculo, basta conversar normalmente. `/meuid` continua disponível para suporte.
 
 ## Segurança
 

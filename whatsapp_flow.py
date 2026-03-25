@@ -1,0 +1,1563 @@
+"""Fluxo conversacional do WhatsApp Web com paridade funcional ao Telegram."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import logging
+import os
+import shutil
+from dataclasses import dataclass, field
+from time import monotonic
+from typing import Any, Awaitable, Callable
+
+from agent_service import invalidar_cache_faq, processar_pergunta
+from bot_profile_photo import (
+    empresa_tem_imagem,
+    excluir_imagem_empresa,
+    obter_caminho_imagem_empresa,
+    salvar_imagem_empresa,
+)
+from config import IMAGES_DIR, PDFS_DIR, VECTOR_STORES_DIR
+from database import (
+    atualizar_empresa,
+    contar_clientes_empresa,
+    criar_empresa,
+    criar_faq,
+    desvincular_cliente,
+    excluir_documento,
+    excluir_empresa_com_dados,
+    excluir_faq,
+    limpar_faqs,
+    listar_documentos,
+    listar_faqs,
+    obter_documento_por_id,
+    obter_empresa_do_cliente,
+    obter_empresa_do_usuario,
+    obter_empresa_por_admin,
+    obter_empresa_por_link_token,
+    registrar_conversa,
+    registrar_documento,
+    vincular_cliente_empresa,
+)
+from document_processor import (
+    SUPPORTED_EXTENSIONS,
+    arquivo_suportado,
+    listar_formatos_suportados,
+    processar_documento,
+    processar_documento_salvo,
+)
+from handlers.common import _gerar_capa_empresa, _montar_texto_boas_vindas_cliente
+from metrics import obter_resumo_metricas_empresa
+from rag_chain import gerar_resposta
+from rate_limiter import (
+    limiter_comandos,
+    limiter_faq,
+    limiter_mensagens,
+    limiter_upload,
+    verificar_rate_limit,
+)
+from validators import (
+    MAX_DOCUMENTOS_POR_EMPRESA,
+    MAX_FAQS_POR_EMPRESA,
+    InputValidationError,
+    validar_fallback,
+    validar_faq_pergunta,
+    validar_faq_resposta,
+    validar_horario,
+    validar_instrucoes,
+    validar_mensagem_usuario,
+    validar_nome_bot,
+    validar_nome_empresa,
+    validar_saudacao,
+)
+from vector_store import adicionar_documentos, empresa_tem_documentos, substituir_documentos
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_INSTRUCOES = (
+    "Você é um assistente de atendimento ao cliente. "
+    "Responda de forma educada e profissional."
+)
+_SESSION_TTL_SECONDS = 24 * 60 * 60
+
+_STATE_ONBOARDING_NOME_EMPRESA = "onboarding_nome_empresa"
+_STATE_ONBOARDING_NOME_BOT = "onboarding_nome_bot"
+_STATE_ONBOARDING_SAUDACAO = "onboarding_saudacao"
+_STATE_ONBOARDING_INSTRUCOES = "onboarding_instrucoes"
+_STATE_ONBOARDING_CONFIRMACAO = "onboarding_confirmacao"
+_STATE_UPLOAD_DOCUMENTO = "upload_documento"
+_STATE_IMAGEM = "imagem"
+_STATE_HORARIO = "horario"
+_STATE_FALLBACK = "fallback"
+_STATE_FAQ_PERGUNTA = "faq_pergunta"
+_STATE_FAQ_RESPOSTA = "faq_resposta"
+_STATE_RESET_CONFIRMACAO = "reset_confirmacao"
+_STATE_EDITAR_CAMPO = "editar_campo"
+_STATE_EDITAR_VALOR = "editar_valor"
+
+_FIELD_LABELS = {
+    "nome": "nome da empresa",
+    "nome_bot": "nome do assistente",
+    "saudacao": "saudacao",
+    "instrucoes": "instrucoes",
+}
+_FIELD_ALIASES = {
+    "nome": "nome",
+    "empresa": "nome",
+    "nome_bot": "nome_bot",
+    "bot": "nome_bot",
+    "assistente": "nome_bot",
+    "saudacao": "saudacao",
+    "instrucoes": "instrucoes",
+    "instrucao": "instrucoes",
+}
+
+DefaultCompanyResolver = Callable[[], Awaitable[dict | None]]
+ShareLinkBuilder = Callable[[str], str | None]
+
+
+@dataclass
+class WhatsAppSession:
+    state: str | None = None
+    data: dict[str, Any] = field(default_factory=dict)
+    identidade_visual_enviada: bool = False
+    updated_at: float = field(default_factory=monotonic)
+
+
+_sessions: dict[str, WhatsAppSession] = {}
+
+
+def _coerce_whatsapp_user_id(raw_value: str) -> int:
+    digits = "".join(char for char in (raw_value or "") if char.isdigit())
+    if digits:
+        value = int(digits)
+        return -(value or 1)
+
+    digest = hashlib.sha256((raw_value or "").encode("utf-8")).hexdigest()
+    return -int(digest[:15], 16)
+
+
+def _touch_session(sender: str) -> WhatsAppSession:
+    now = monotonic()
+    expirados = [
+        chave
+        for chave, sessao in _sessions.items()
+        if now - sessao.updated_at > _SESSION_TTL_SECONDS
+    ]
+    for chave in expirados:
+        _sessions.pop(chave, None)
+
+    session = _sessions.setdefault(sender, WhatsAppSession())
+    session.updated_at = now
+    return session
+
+
+def _clear_session(session: WhatsAppSession, *, keep_identity: bool = True) -> None:
+    identidade = session.identidade_visual_enviada if keep_identity else False
+    session.state = None
+    session.data.clear()
+    session.identidade_visual_enviada = identidade
+    session.updated_at = monotonic()
+
+
+def _make_text_action(text: str) -> dict[str, str]:
+    return {"type": "text", "text": text}
+
+
+def _make_image_action(
+    image_bytes: bytes,
+    *,
+    caption: str = "",
+    filename: str = "imagem.jpg",
+    mime_type: str = "image/jpeg",
+) -> dict[str, str]:
+    return {
+        "type": "image",
+        "caption": caption,
+        "filename": filename,
+        "mime_type": mime_type,
+        "media_base64": base64.b64encode(image_bytes).decode("ascii"),
+    }
+
+
+def _image_action_from_path(path: str, caption: str) -> dict[str, str] | None:
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as file:
+        return _make_image_action(file.read(), caption=caption, filename=os.path.basename(path))
+
+
+def _make_welcome_actions(empresa: dict, session: WhatsAppSession) -> list[dict[str, str]]:
+    texto = _montar_texto_boas_vindas_cliente(empresa, empresa_tem_documentos(empresa["id"]))
+    if session.identidade_visual_enviada:
+        return [_make_text_action(texto)]
+
+    try:
+        capa = _gerar_capa_empresa(empresa)
+        session.identidade_visual_enviada = True
+        return [_make_image_action(capa.getvalue(), caption=texto, filename="capa.jpg")]
+    except Exception as exc:
+        logger.warning(
+            "Falha ao gerar a identidade visual da empresa %s para o WhatsApp: %s",
+            empresa["id"],
+            exc,
+        )
+        session.identidade_visual_enviada = True
+        return [_make_text_action(texto)]
+
+
+def _parse_command(text: str) -> tuple[str | None, list[str]]:
+    texto = (text or "").strip()
+    if not texto.startswith("/"):
+        return None, []
+
+    partes = texto.split()
+    comando = partes[0][1:].split("@", 1)[0].strip().lower()
+    return (comando or None), partes[1:]
+
+
+def _looks_like_confirmation(text: str, *allowed: str) -> bool:
+    normalized = (text or "").strip().lower().lstrip("/")
+    return normalized in allowed
+
+
+def _formatar_bloco_metricas_local(resumo: dict | None) -> str:
+    if not resumo:
+        return "📈 Métricas recentes: ainda sem dados nesta execução."
+
+    atendimento = resumo["atendimentos"]
+    rag = resumo["rag"]
+    decisoes = atendimento["decisoes"]
+    top_decisoes = sorted(decisoes.items(), key=lambda item: (-item[1], item[0]))[:3]
+    decisoes_texto = ", ".join(f"{nome}={total}" for nome, total in top_decisoes) or "sem dados"
+    return "\n".join(
+        [
+            f"📈 Métricas recentes ({resumo['janela_horas']}h, max. 200 eventos)",
+            (
+                f"Atendimentos: {atendimento['total']} | media {atendimento['media_segundos']:.2f}s | "
+                f"p95 {atendimento['p95_segundos']:.2f}s | sucesso {atendimento['taxa_sucesso'] * 100:.0f}% | "
+                f"RAG {atendimento['taxa_rag'] * 100:.0f}%"
+            ),
+            (
+                f"RAG: {rag['total']} | media {rag['media_segundos']:.2f}s | "
+                f"p95 {rag['p95_segundos']:.2f}s | cache hit {rag['taxa_cache_hit'] * 100:.0f}% | "
+                f"sucesso {rag['taxa_sucesso'] * 100:.0f}%"
+            ),
+            f"Top decisoes: {decisoes_texto}",
+        ]
+    )
+
+
+def _caminho_documento(empresa_id: int, nome_arquivo: str) -> str:
+    return os.path.join(PDFS_DIR, str(empresa_id), nome_arquivo)
+
+
+def _remover_arquivos_empresa(empresa_id: int) -> None:
+    for diretorio_base in [PDFS_DIR, VECTOR_STORES_DIR, IMAGES_DIR]:
+        caminho = os.path.join(diretorio_base, str(empresa_id))
+        if os.path.isdir(caminho):
+            shutil.rmtree(caminho, ignore_errors=True)
+
+
+def _resumo_reindexacao(quantidade_processada: int, avisos: list[str]) -> str:
+    linhas = [f"📊 Base atualizada com {quantidade_processada} documento(s) valido(s)."]
+    if avisos:
+        linhas.append("")
+        linhas.append("⚠️ Avisos:")
+        for aviso in avisos[:3]:
+            linhas.append(f"- {aviso}")
+        if len(avisos) > 3:
+            linhas.append(f"- ... e mais {len(avisos) - 3} aviso(s).")
+    return "\n".join(linhas)
+
+
+async def _reindexar_base_empresa(empresa_id: int) -> tuple[int, list[str]]:
+    documentos = await listar_documentos(empresa_id)
+    documentos_processados: list[tuple[list[str], dict]] = []
+    avisos: list[str] = []
+
+    for documento in documentos:
+        caminho = _caminho_documento(empresa_id, documento["nome_arquivo"])
+        if not os.path.exists(caminho):
+            avisos.append(f"{documento['nome_arquivo']}: arquivo nao encontrado no disco.")
+            continue
+
+        try:
+            chunks = processar_documento_salvo(caminho)
+        except Exception as exc:
+            avisos.append(f"{documento['nome_arquivo']}: {exc}")
+            continue
+
+        documentos_processados.append(
+            (
+                chunks,
+                {
+                    "arquivo": documento["nome_arquivo"],
+                    "documento_id": documento["id"],
+                },
+            )
+        )
+
+    substituir_documentos(empresa_id, documentos_processados)
+    return len(documentos_processados), avisos
+
+
+def _guess_filename(message_type: str, file_name: str | None, mime_type: str | None) -> str:
+    if file_name:
+        return file_name
+
+    if mime_type:
+        for ext, label in SUPPORTED_EXTENSIONS.items():
+            if label.lower() in mime_type.lower():
+                return f"arquivo{ext}"
+        if mime_type.lower().startswith("image/"):
+            return "imagem.jpg"
+
+    if message_type == "image":
+        return "imagem.jpg"
+    if message_type == "document":
+        return "documento"
+    return "arquivo"
+
+
+def _apply_field_validation(field_name: str, raw_value: str) -> str:
+    if field_name == "nome":
+        return validar_nome_empresa(raw_value)
+    if field_name == "nome_bot":
+        return validar_nome_bot(raw_value)
+    if field_name == "saudacao":
+        return validar_saudacao(raw_value)
+    if field_name == "instrucoes":
+        return validar_instrucoes(raw_value)
+    raise InputValidationError("Campo de edicao invalido.")
+
+
+def _resolve_edit_field(raw_field: str | None) -> str | None:
+    if not raw_field:
+        return None
+    return _FIELD_ALIASES.get(raw_field.strip().lower())
+
+
+async def _processar_documento_recebido(
+    *,
+    user_id: int,
+    empresa: dict,
+    media_bytes: bytes,
+    file_name: str,
+    modo_upload: bool,
+) -> list[dict[str, str]]:
+    if not arquivo_suportado(file_name):
+        return [
+            _make_text_action(
+                f"⚠️ Formato nao suportado. Envie um destes formatos: {listar_formatos_suportados()}."
+            )
+        ]
+
+    rate_msg = verificar_rate_limit(limiter_upload, user_id)
+    if rate_msg:
+        return [_make_text_action(rate_msg)]
+
+    docs_existentes = await listar_documentos(empresa["id"])
+    if len(docs_existentes) >= MAX_DOCUMENTOS_POR_EMPRESA:
+        return [
+            _make_text_action(
+                f"⚠️ Limite de {MAX_DOCUMENTOS_POR_EMPRESA} documentos por empresa atingido.\n"
+                "Exclua documentos antigos com /documentos excluir <id> antes de enviar novos."
+            )
+        ]
+
+    try:
+        arquivo_existia = os.path.exists(_caminho_documento(empresa["id"], file_name))
+        chunks = processar_documento(empresa["id"], file_name, media_bytes)
+        await registrar_documento(empresa["id"], file_name)
+
+        if arquivo_existia:
+            quantidade_processada, avisos = await _reindexar_base_empresa(empresa["id"])
+            resumo = _resumo_reindexacao(quantidade_processada, avisos)
+            return [
+                _make_text_action(
+                    f"✅ {file_name} atualizado com sucesso.\n"
+                    f"{resumo}\n\n"
+                    + (
+                        "Envie mais arquivos ou use /pronto para finalizar."
+                        if modo_upload
+                        else "Voce pode enviar mais documentos ou testar o agente com uma pergunta."
+                    )
+                )
+            ]
+
+        adicionar_documentos(empresa["id"], chunks, {"arquivo": file_name})
+        return [
+            _make_text_action(
+                f"✅ {file_name} processado com sucesso.\n"
+                f"📊 {len(chunks)} trechos indexados.\n\n"
+                + (
+                    "Envie mais arquivos ou use /pronto para finalizar."
+                    if modo_upload
+                    else "Voce pode enviar mais documentos ou testar o agente com uma pergunta."
+                )
+            )
+        ]
+    except (ValueError, InputValidationError) as exc:
+        return [_make_text_action(f"⚠️ {exc}")]
+    except Exception as exc:
+        logger.error("Erro ao processar documento no WhatsApp: %s", exc, exc_info=True)
+        return [_make_text_action("❌ Erro ao processar o documento. Tente novamente.")]
+
+
+def _mensagem_somente_admin() -> str:
+    return (
+        "🔒 Este comando e exclusivo do admin que configurou o atendimento.\n"
+        "Se voce recebeu um token de acesso, use este chat apenas para conversar."
+    )
+
+
+async def _handle_state_message(
+    *,
+    sender: str,
+    user_id: int,
+    session: WhatsAppSession,
+    text: str,
+    message_type: str,
+    mime_type: str,
+    file_name: str,
+    media_bytes: bytes | None,
+) -> list[dict[str, str]] | None:
+    state = session.state
+    if state == _STATE_ONBOARDING_NOME_EMPRESA:
+        if not text:
+            return [_make_text_action("⚠️ Envie o nome da sua empresa em texto.")]
+        try:
+            session.data["nome_empresa"] = validar_nome_empresa(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        session.state = _STATE_ONBOARDING_NOME_BOT
+        return [
+            _make_text_action(
+                "✅ Otimo.\n\n"
+                "Agora envie o nome do seu assistente virtual.\n"
+                "Exemplo: Ana, Assistente Virtual, Suporte."
+            )
+        ]
+
+    if state == _STATE_ONBOARDING_NOME_BOT:
+        if not text:
+            return [_make_text_action("⚠️ Envie o nome do assistente em texto.")]
+        try:
+            session.data["nome_bot"] = validar_nome_bot(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        session.state = _STATE_ONBOARDING_SAUDACAO
+        return [
+            _make_text_action(
+                "👋 Agora envie a mensagem de saudacao inicial.\n"
+                "Exemplo: Ola! Bem-vindo. Como posso ajudar?"
+            )
+        ]
+
+    if state == _STATE_ONBOARDING_SAUDACAO:
+        if not text:
+            return [_make_text_action("⚠️ Envie a saudacao em texto.")]
+        try:
+            session.data["saudacao"] = validar_saudacao(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        session.state = _STATE_ONBOARDING_INSTRUCOES
+        return [
+            _make_text_action(
+                "📝 Envie agora as instrucoes especiais do bot.\n"
+                "Se quiser usar o padrao, envie /pular."
+            )
+        ]
+
+    if state == _STATE_ONBOARDING_INSTRUCOES:
+        if _looks_like_confirmation(text, "pular"):
+            session.data["instrucoes"] = _DEFAULT_INSTRUCOES
+        else:
+            if not text:
+                return [_make_text_action("⚠️ Envie as instrucoes em texto ou use /pular.")]
+            try:
+                session.data["instrucoes"] = validar_instrucoes(text)
+            except InputValidationError as exc:
+                return [_make_text_action(f"⚠️ {exc.message}")]
+
+        session.state = _STATE_ONBOARDING_CONFIRMACAO
+        instrucoes_resumidas = str(session.data["instrucoes"])
+        if len(instrucoes_resumidas) > 100:
+            instrucoes_resumidas = instrucoes_resumidas[:100] + "..."
+        return [
+            _make_text_action(
+                "📋 Revise sua configuracao:\n\n"
+                f"📌 Empresa: {session.data['nome_empresa']}\n"
+                f"🤖 Assistente: {session.data['nome_bot']}\n"
+                f"👋 Saudacao: {session.data['saudacao']}\n"
+                f"📝 Instrucoes: {instrucoes_resumidas}\n\n"
+                "Envie /confirmar para salvar ou /recomecar para reiniciar."
+            )
+        ]
+
+    if state == _STATE_ONBOARDING_CONFIRMACAO:
+        if _looks_like_confirmation(text, "recomecar"):
+            session.state = _STATE_ONBOARDING_NOME_EMPRESA
+            session.data.clear()
+            return [_make_text_action("🔄 Vamos recomeçar. Qual e o nome da sua empresa?")]
+
+        if not _looks_like_confirmation(text, "confirmar", "sim"):
+            return [_make_text_action("Envie /confirmar para salvar ou /recomecar para reiniciar.")]
+
+        empresa_id = await criar_empresa(str(session.data["nome_empresa"]), user_id)
+        await atualizar_empresa(
+            empresa_id,
+            nome_bot=str(session.data["nome_bot"]),
+            saudacao=str(session.data["saudacao"]),
+            instrucoes=str(session.data["instrucoes"]),
+        )
+        _clear_session(session)
+        return [
+            _make_text_action(
+                "🎉 Empresa cadastrada com sucesso.\n\n"
+                "Agora envie seus documentos neste chat ou use /upload para entrar no modo guiado.\n"
+                "Use /link quando quiser gerar o acesso dos clientes.\n"
+                f"Formatos aceitos: {listar_formatos_suportados()}.\n"
+                "Se quiser, use /imagem para definir a imagem do agente."
+            )
+        ]
+
+    if state == _STATE_UPLOAD_DOCUMENTO:
+        empresa = await obter_empresa_por_admin(user_id)
+        if not empresa:
+            _clear_session(session)
+            return [_make_text_action("❌ Seu acesso de admin nao foi encontrado. Use /start novamente.")]
+
+        if message_type == "document" and media_bytes:
+            return await _processar_documento_recebido(
+                user_id=user_id,
+                empresa=empresa,
+                media_bytes=media_bytes,
+                file_name=_guess_filename(message_type, file_name, mime_type),
+                modo_upload=True,
+            )
+
+        return [_make_text_action("Envie um documento suportado ou use /pronto para finalizar.")]
+
+    if state == _STATE_IMAGEM:
+        empresa = await obter_empresa_por_admin(user_id)
+        if not empresa:
+            _clear_session(session)
+            return [_make_text_action("❌ Seu acesso de admin nao foi encontrado. Use /start novamente.")]
+
+        if message_type != "image" or not media_bytes:
+            return [_make_text_action("Envie uma imagem valida agora ou use /cancelar.")]
+
+        try:
+            salvar_imagem_empresa(empresa["id"], media_bytes)
+            _clear_session(session)
+            preview = _image_action_from_path(
+                obter_caminho_imagem_empresa(empresa["id"]),
+                "Preview da imagem atual do seu agente.",
+            )
+            actions = [_make_text_action("✅ A imagem do seu agente foi atualizada com sucesso.")]
+            if preview:
+                actions.append(preview)
+            return actions
+        except (ValueError, InputValidationError) as exc:
+            return [_make_text_action(f"⚠️ {exc}")]
+        except Exception as exc:
+            logger.error("Erro ao salvar imagem via WhatsApp: %s", exc, exc_info=True)
+            return [_make_text_action("❌ Nao foi possivel atualizar a imagem agora. Tente novamente.")]
+
+    if state == _STATE_HORARIO:
+        empresa = await obter_empresa_por_admin(user_id)
+        if not empresa:
+            _clear_session(session)
+            return [_make_text_action("❌ Seu acesso de admin nao foi encontrado. Use /start novamente.")]
+
+        if not text:
+            return [_make_text_action("Envie o horario em texto ou use /cancelar.")]
+        try:
+            horario = validar_horario(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        await atualizar_empresa(empresa["id"], horario_atendimento=horario)
+        _clear_session(session)
+        return [_make_text_action(f"✅ Horario atualizado para: {horario}")]
+
+    if state == _STATE_FALLBACK:
+        empresa = await obter_empresa_por_admin(user_id)
+        if not empresa:
+            _clear_session(session)
+            return [_make_text_action("❌ Seu acesso de admin nao foi encontrado. Use /start novamente.")]
+
+        if not text:
+            return [_make_text_action("Envie o contato em texto ou use /cancelar.")]
+        try:
+            fallback = validar_fallback(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        await atualizar_empresa(empresa["id"], fallback_contato=fallback)
+        _clear_session(session)
+        return [_make_text_action(f"✅ Fallback atualizado para: {fallback}")]
+
+    if state == _STATE_FAQ_PERGUNTA:
+        empresa = await obter_empresa_por_admin(user_id)
+        if not empresa:
+            _clear_session(session)
+            return [_make_text_action("❌ Seu acesso de admin nao foi encontrado. Use /start novamente.")]
+
+        rate_msg = verificar_rate_limit(limiter_faq, user_id)
+        if rate_msg:
+            _clear_session(session)
+            return [_make_text_action(rate_msg)]
+
+        if not text:
+            return [_make_text_action("Envie a pergunta da FAQ em texto.")]
+        try:
+            session.data["faq_pergunta"] = validar_faq_pergunta(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        session.data["empresa_faq_id"] = empresa["id"]
+        session.state = _STATE_FAQ_RESPOSTA
+        return [_make_text_action("📝 Agora envie a resposta dessa FAQ.")]
+
+    if state == _STATE_FAQ_RESPOSTA:
+        empresa_id = session.data.get("empresa_faq_id")
+        pergunta = session.data.get("faq_pergunta")
+        if not empresa_id or not pergunta:
+            _clear_session(session)
+            return [_make_text_action("❌ Erro interno. Use /faq adicionar novamente.")]
+
+        if not text:
+            return [_make_text_action("Envie a resposta da FAQ em texto.")]
+        try:
+            resposta = validar_faq_resposta(text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+
+        await criar_faq(int(empresa_id), str(pergunta), resposta)
+        invalidar_cache_faq(int(empresa_id))
+        _clear_session(session)
+        return [_make_text_action("✅ FAQ cadastrada com sucesso.")]
+
+    if state == _STATE_RESET_CONFIRMACAO:
+        empresa = await obter_empresa_por_admin(user_id)
+        if not empresa:
+            _clear_session(session, keep_identity=False)
+            return [_make_text_action("❌ Seu acesso de admin nao foi encontrado. Use /start novamente.")]
+
+        if _looks_like_confirmation(text, "cancelar", "nao", "não"):
+            _clear_session(session)
+            return [_make_text_action("✅ Reset cancelado. Sua configuracao continua ativa.")]
+
+        if not _looks_like_confirmation(text, "sim", "confirmar"):
+            return [_make_text_action("Responda SIM para apagar tudo ou /cancelar para desistir.")]
+
+        try:
+            await excluir_empresa_com_dados(empresa["id"])
+            _remover_arquivos_empresa(empresa["id"])
+        except Exception as exc:
+            logger.error("Erro ao resetar empresa no WhatsApp: %s", exc, exc_info=True)
+            _clear_session(session)
+            return [_make_text_action("❌ Nao foi possivel resetar a configuracao agora.")]
+
+        _clear_session(session, keep_identity=False)
+        session.state = _STATE_ONBOARDING_NOME_EMPRESA
+        return [
+            _make_text_action(
+                f"♻️ A configuracao de {empresa['nome']} foi apagada.\n"
+                "Vamos configurar novamente. Qual e o nome da sua empresa?"
+            )
+        ]
+
+    if state == _STATE_EDITAR_CAMPO:
+        campo = _resolve_edit_field(text)
+        if not campo:
+            return [
+                _make_text_action(
+                    "Campo invalido. Envie um destes: nome, bot, saudacao, instrucoes.\n"
+                    "Ou use /cancelar."
+                )
+            ]
+        session.data["campo_editando"] = campo
+        session.state = _STATE_EDITAR_VALOR
+        return [_make_text_action(f"📝 Envie o novo valor para {_FIELD_LABELS[campo]}.")]
+
+    if state == _STATE_EDITAR_VALOR:
+        empresa = await obter_empresa_por_admin(user_id)
+        campo = str(session.data.get("campo_editando") or "")
+        if not empresa or not campo:
+            _clear_session(session)
+            return [_make_text_action("❌ Erro interno. Use /editar novamente.")]
+        if not text:
+            return [_make_text_action("Envie o novo valor em texto ou use /cancelar.")]
+
+        try:
+            novo_valor = _apply_field_validation(campo, text)
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+
+        await atualizar_empresa(empresa["id"], **{campo: novo_valor})
+        _clear_session(session)
+        return [_make_text_action(f"✅ {_FIELD_LABELS[campo].title()} atualizado para: {novo_valor}")]
+
+    return None
+
+
+async def _cmd_start(
+    *,
+    sender: str,
+    user_id: int,
+    args: list[str],
+    session: WhatsAppSession,
+) -> list[dict[str, str]]:
+    payload = args[0].strip() if args else ""
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
+    formatos = listar_formatos_suportados()
+
+    if payload:
+        empresa_link = await obter_empresa_por_link_token(payload)
+        if not empresa_link:
+            return [_make_text_action("❌ Este token de atendimento e invalido ou expirou.")]
+
+        if empresa_admin:
+            if empresa_admin["id"] == empresa_link["id"]:
+                return [
+                    _make_text_action(
+                        f"Voce ja e o admin de {empresa_admin['nome']}.\n"
+                        "Use /painel para gerenciar o agente e /link para compartilhar com clientes."
+                    )
+                ]
+            return [_make_text_action("🔒 Este token e destinado a clientes.")]
+
+        await vincular_cliente_empresa(empresa_link["id"], user_id)
+        session.identidade_visual_enviada = False
+        _clear_session(session)
+        return _make_welcome_actions(empresa_link, session)
+
+    if empresa_admin:
+        _clear_session(session)
+        tem_docs = empresa_tem_documentos(empresa_admin["id"])
+        dica_teste = (
+            "Envie uma pergunta neste chat para testar o agente."
+            if tem_docs
+            else f"Envie documentos com /upload para o agente comecar a funcionar. Formatos aceitos: {formatos}."
+        )
+        return [
+            _make_text_action(
+                f"👋 Sua configuracao para {empresa_admin['nome']} ja esta ativa.\n\n"
+                "Use /painel para gerenciar o agente.\n"
+                "Use /link para gerar o acesso dos clientes.\n"
+                "Use /ajuda para ver os comandos.\n"
+                f"{dica_teste}"
+            )
+        ]
+
+    if empresa_cliente:
+        session.identidade_visual_enviada = False
+        _clear_session(session)
+        return _make_welcome_actions(empresa_cliente, session)
+
+    _clear_session(session, keep_identity=False)
+    session.state = _STATE_ONBOARDING_NOME_EMPRESA
+    return [
+        _make_text_action(
+            "👋 Vamos configurar seu agente de atendimento.\n\n"
+            "Neste onboarding voce vai definir:\n"
+            "1. Nome da empresa\n"
+            "2. Nome do assistente\n"
+            "3. Saudacao inicial\n"
+            "4. Instrucoes de comportamento\n\n"
+            "Para comecar, qual e o nome da sua empresa?\n"
+            "Se quiser sair, envie /cancelar."
+        )
+    ]
+
+
+async def _cmd_registrar(*, user_id: int, session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
+    if empresa_admin:
+        return [
+            _make_text_action(
+                f"Voce ja tem a empresa {empresa_admin['nome']} registrada.\n"
+                "Use /painel para gerenciar, /editar para ajustar a configuracao ou /reset para recomecar."
+            )
+        ]
+    if empresa_cliente:
+        return [_make_text_action(_mensagem_somente_admin())]
+
+    _clear_session(session, keep_identity=False)
+    session.state = _STATE_ONBOARDING_NOME_EMPRESA
+    return [
+        _make_text_action(
+            "👋 Vamos configurar seu agente de atendimento.\n\n"
+            "Qual e o nome da sua empresa?\n"
+            "Se quiser sair, envie /cancelar."
+        )
+    ]
+
+
+async def _cmd_sair(*, user_id: int, session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    if empresa_admin:
+        return [_make_text_action("🔒 Admins nao podem usar /sair. Use /reset para reconfigurar do zero.")]
+
+    empresa = await obter_empresa_do_cliente(user_id)
+    if not empresa:
+        return [_make_text_action("Voce nao esta vinculado a nenhum atendimento no momento.")]
+
+    desvinculado = await desvincular_cliente(user_id)
+    if not desvinculado:
+        return [_make_text_action("❌ Nao foi possivel sair do atendimento agora. Tente novamente.")]
+
+    _clear_session(session, keep_identity=False)
+    return [
+        _make_text_action(
+            f"✅ Voce saiu do atendimento de {empresa['nome']}.\n\n"
+            "Se quiser entrar novamente, use /start TOKEN com o token enviado pelo administrador."
+        )
+    ]
+
+
+async def _cmd_ajuda(*, user_id: int) -> list[dict[str, str]]:
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
+    formatos = listar_formatos_suportados()
+    if empresa_admin:
+        texto = (
+            "📋 Comandos do admin no WhatsApp:\n\n"
+            "/start - Abrir a configuracao inicial\n"
+            "/registrar - Iniciar o cadastro\n"
+            "/meuid - Mostrar seu identificador\n"
+            "/link - Gerar o acesso dos clientes\n"
+            "/painel - Ver resumo geral\n"
+            "/upload - Entrar no modo de envio de documentos\n"
+            "/documentos - Listar, reprocessar, reindexar e excluir documentos\n"
+            "/imagem - Atualizar a imagem do agente\n"
+            "/pausar - Pausar o agente\n"
+            "/ativar - Reativar o agente\n"
+            "/horario - Configurar horario de atendimento\n"
+            "/fallback - Configurar contato humano\n"
+            "/faq - Gerenciar perguntas frequentes\n"
+            "/editar - Editar configuracoes do bot\n"
+            "/status - Ver status do agente\n"
+            "/reset - Apagar tudo e recomecar\n"
+            "/cancelar - Cancelar o fluxo atual\n\n"
+            f"Voce pode enviar documentos diretamente neste chat. Formatos aceitos: {formatos}.\n"
+            "Clientes devem entrar com /start TOKEN."
+        )
+    elif empresa_cliente:
+        texto = (
+            f"💬 Este chat esta vinculado ao atendimento de {empresa_cliente['nome']}.\n\n"
+            "Basta enviar sua mensagem normalmente para conversar com o agente.\n"
+            "Se precisar informar seu identificador ao atendimento, use /meuid.\n"
+            "Se quiser sair deste atendimento, use /sair."
+        )
+    else:
+        texto = (
+            "👋 Este atendimento possui dois perfis:\n\n"
+            "- admin: configura empresa, documentos, FAQ e horario\n"
+            "- cliente: usa o token enviado pelo admin para conversar\n\n"
+            "Se voce e o admin, envie /start para iniciar.\n"
+            "Se voce e cliente, envie /start TOKEN."
+        )
+    return [_make_text_action(texto)]
+
+
+async def _cmd_meuid(*, sender: str, user_id: int) -> list[dict[str, str]]:
+    return [
+        _make_text_action(
+            "🆔 Seus identificadores neste atendimento:\n\n"
+            f"WhatsApp: {sender}\n"
+            f"Interno: {user_id}\n\n"
+            "Envie esse numero ao administrador se ele precisar conferir seu acesso."
+        )
+    ]
+
+
+async def _cmd_link(
+    *,
+    user_id: int,
+    share_link_builder: ShareLinkBuilder | None,
+) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    token = empresa["link_token"]
+    share_link = share_link_builder(token) if share_link_builder else None
+    linhas = [
+        f"🔗 Acesso de atendimento de {empresa['nome']}",
+        "",
+        f"Token: {token}",
+        "O cliente pode entrar enviando:",
+        f"/start {token}",
+    ]
+    if share_link:
+        linhas.extend(["", f"Link pronto para compartilhar:\n{share_link}"])
+    return [_make_text_action("\n".join(linhas))]
+
+
+async def _cmd_painel(*, user_id: int) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    docs = await listar_documentos(empresa["id"])
+    faqs = await listar_faqs(empresa["id"])
+    total_clientes = await contar_clientes_empresa(empresa["id"])
+    tem_docs = empresa_tem_documentos(empresa["id"])
+    tem_imagem = empresa_tem_imagem(empresa["id"])
+    agente_ativo = bool(empresa.get("ativo", 1))
+
+    if not agente_ativo:
+        status_emoji = "⏸️"
+        status_texto = "Pausado"
+    elif tem_docs:
+        status_emoji = "🟢"
+        status_texto = "Pronto para teste"
+    else:
+        status_emoji = "🟡"
+        status_texto = "Sem documentos"
+
+    return [
+        _make_text_action(
+            f"📊 Painel - {empresa['nome']}\n\n"
+            f"🤖 Assistente: {empresa['nome_bot']}\n"
+            f"👋 Saudacao: {empresa['saudacao']}\n"
+            f"⏱️ Atendimento: {'Ativo' if agente_ativo else 'Pausado'}\n"
+            f"🖼️ Imagem: {'Configurada' if tem_imagem else 'Nao configurada'}\n"
+            f"🕒 Horario: {'Configurado' if empresa.get('horario_atendimento') else 'Nao configurado'}\n"
+            f"🆘 Fallback: {'Configurado' if empresa.get('fallback_contato') else 'Nao configurado'}\n"
+            f"👥 Clientes: {total_clientes}\n"
+            f"❔ FAQs: {len(faqs)}\n"
+            f"📄 Documentos: {len(docs)}\n"
+            f"{status_emoji} Status: {status_texto}\n\n"
+            "Comandos uteis:\n"
+            "/upload, /documentos, /imagem, /faq, /horario, /fallback, /editar, /status, /link"
+        )
+    ]
+
+
+async def _cmd_status(*, user_id: int) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    tem_docs = empresa_tem_documentos(empresa["id"])
+    docs = await listar_documentos(empresa["id"])
+    faqs = await listar_faqs(empresa["id"])
+    total_clientes = await contar_clientes_empresa(empresa["id"])
+    tem_imagem = empresa_tem_imagem(empresa["id"])
+    resumo_metricas = await obter_resumo_metricas_empresa(empresa["id"])
+
+    if tem_docs:
+        texto = (
+            f"🟢 Agente CONFIGURADO\n\n"
+            f"Empresa: {empresa['nome']}\n"
+            f"Assistente: {empresa['nome_bot']}\n"
+            f"Atendimento: {'Ativo' if bool(empresa.get('ativo', 1)) else 'Pausado'}\n"
+            f"Imagem: {'Configurada' if tem_imagem else 'Nao configurada'}\n"
+            f"Horario: {empresa.get('horario_atendimento') or 'Nao configurado'}\n"
+            f"Fallback: {empresa.get('fallback_contato') or 'Nao configurado'}\n"
+            f"Clientes vinculados: {total_clientes}\n"
+            f"FAQs: {len(faqs)}\n"
+            f"Documentos indexados: {len(docs)}\n\n"
+            f"{_formatar_bloco_metricas_local(resumo_metricas)}\n\n"
+            "Seu agente ja pode ser testado neste chat e compartilhado com /link."
+        )
+    else:
+        texto = (
+            f"🟡 Agente INCOMPLETO\n\n"
+            f"Empresa: {empresa['nome']}\n"
+            f"Atendimento: {'Ativo' if bool(empresa.get('ativo', 1)) else 'Pausado'}\n"
+            f"Imagem: {'Configurada' if tem_imagem else 'Nao configurada'}\n"
+            f"Horario: {empresa.get('horario_atendimento') or 'Nao configurado'}\n"
+            f"Fallback: {empresa.get('fallback_contato') or 'Nao configurado'}\n"
+            f"Clientes vinculados: {total_clientes}\n"
+            f"FAQs: {len(faqs)}\n"
+            "Nenhum documento carregado.\n\n"
+            f"{_formatar_bloco_metricas_local(resumo_metricas)}\n\n"
+            "Envie documentos neste chat ou use /upload para concluir a configuracao."
+        )
+
+    actions: list[dict[str, str]] = [_make_text_action(texto)]
+    if tem_imagem:
+        preview = _image_action_from_path(
+            obter_caminho_imagem_empresa(empresa["id"]),
+            "Imagem atual do seu agente.",
+        )
+        if preview:
+            actions.append(preview)
+    return actions
+
+
+async def _cmd_pausar_ativar(*, user_id: int, ativo: bool) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    ativo_atual = bool(empresa.get("ativo", 1))
+    if ativo_atual == ativo:
+        return [
+            _make_text_action("ℹ️ Seu agente ja esta ativo." if ativo else "ℹ️ Seu agente ja esta pausado.")
+        ]
+
+    await atualizar_empresa(empresa["id"], ativo=1 if ativo else 0)
+    return [
+        _make_text_action(
+            "▶️ Seu agente foi ativado e ja pode voltar a responder neste chat."
+            if ativo
+            else "⏸️ Seu agente foi pausado. Enquanto estiver pausado, as pessoas verao apenas sua orientacao operacional."
+        )
+    ]
+
+
+async def _cmd_horario(*, user_id: int, args: list[str], session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if args:
+        acao = args[0].lower()
+        if acao in {"limpar", "remover", "apagar"}:
+            await atualizar_empresa(empresa["id"], horario_atendimento="")
+            return [_make_text_action("✅ O horario de atendimento foi removido.")]
+        try:
+            horario = validar_horario(" ".join(args))
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        await atualizar_empresa(empresa["id"], horario_atendimento=horario)
+        return [_make_text_action(f"✅ Horario atualizado para: {horario}")]
+
+    _clear_session(session)
+    session.state = _STATE_HORARIO
+    horario_atual = empresa.get("horario_atendimento") or "Nao configurado"
+    return [
+        _make_text_action(
+            "🕒 Horario de atendimento\n\n"
+            f"Atual: {horario_atual}\n\n"
+            "Envie o texto completo do horario.\n"
+            "Exemplo: Seg a Sex, 08h as 18h.\n"
+            "Se quiser remover, use /horario limpar."
+        )
+    ]
+
+
+async def _cmd_fallback(*, user_id: int, args: list[str], session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if args:
+        acao = args[0].lower()
+        if acao in {"limpar", "remover", "apagar"}:
+            await atualizar_empresa(empresa["id"], fallback_contato="")
+            return [_make_text_action("✅ O fallback para atendimento humano foi removido.")]
+        try:
+            fallback = validar_fallback(" ".join(args))
+        except InputValidationError as exc:
+            return [_make_text_action(f"⚠️ {exc.message}")]
+        await atualizar_empresa(empresa["id"], fallback_contato=fallback)
+        return [_make_text_action(f"✅ Fallback atualizado para: {fallback}")]
+
+    _clear_session(session)
+    session.state = _STATE_FALLBACK
+    fallback_atual = empresa.get("fallback_contato") or "Nao configurado"
+    return [
+        _make_text_action(
+            "🆘 Fallback para humano\n\n"
+            f"Atual: {fallback_atual}\n\n"
+            "Envie o contato de fallback.\n"
+            "Exemplo: WhatsApp (11) 99999-9999 ou suporte@empresa.com.\n"
+            "Se quiser remover, use /fallback limpar."
+        )
+    ]
+
+
+async def _cmd_faq(*, user_id: int, args: list[str], session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if args:
+        acao = args[0].lower()
+        if acao in {"adicionar", "nova", "novo"}:
+            faqs = await listar_faqs(empresa["id"])
+            if len(faqs) >= MAX_FAQS_POR_EMPRESA:
+                return [
+                    _make_text_action(
+                        f"⚠️ Limite de {MAX_FAQS_POR_EMPRESA} FAQs por empresa atingido.\n"
+                        "Exclua FAQs antigas com /faq excluir <id> antes de cadastrar novas."
+                    )
+                ]
+            _clear_session(session)
+            session.state = _STATE_FAQ_PERGUNTA
+            return [_make_text_action("➕ Nova FAQ\n\nEnvie agora a pergunta da FAQ.")]
+
+        if acao in {"limpar", "apagar"}:
+            removidas = await limpar_faqs(empresa["id"])
+            invalidar_cache_faq(empresa["id"])
+            return [_make_text_action(f"🧹 {removidas} FAQ(s) removida(s).")]
+
+        if acao in {"remover", "excluir"}:
+            if len(args) < 2 or not args[1].isdigit():
+                return [_make_text_action("⚠️ Use /faq excluir <id> para remover uma FAQ.")]
+            removida = await excluir_faq(empresa["id"], int(args[1]))
+            if removida:
+                invalidar_cache_faq(empresa["id"])
+                return [_make_text_action("🗑 FAQ removida com sucesso.")]
+            return [_make_text_action("⚠️ FAQ nao encontrada.")]
+
+    faqs = await listar_faqs(empresa["id"])
+    if not faqs:
+        return [
+            _make_text_action(
+                f"❔ FAQs - {empresa['nome']}\n\n"
+                "Nenhuma FAQ cadastrada ainda.\n"
+                "Use /faq adicionar para criar uma."
+            )
+        ]
+
+    linhas = [
+        f"❔ FAQs - {empresa['nome']}",
+        "",
+        "Use /faq adicionar, /faq excluir <id> ou /faq limpar.",
+        "",
+    ]
+    for faq in faqs:
+        linhas.append(f"{faq['id']}. {faq['pergunta']}")
+    return [_make_text_action("\n".join(linhas))]
+
+
+async def _cmd_documentos(*, user_id: int, args: list[str]) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if args:
+        acao = args[0].lower()
+        if acao == "reindexar":
+            try:
+                quantidade_processada, avisos = await _reindexar_base_empresa(empresa["id"])
+            except Exception as exc:
+                logger.error("Erro ao reindexar base no WhatsApp: %s", exc, exc_info=True)
+                return [_make_text_action("❌ Nao foi possivel reindexar a base agora.")]
+            return [_make_text_action(f"✅ Base reindexada com sucesso.\n{_resumo_reindexacao(quantidade_processada, avisos)}")]
+
+        if acao == "reprocessar":
+            if len(args) < 2 or not args[1].isdigit():
+                return [_make_text_action("⚠️ Use /documentos reprocessar <id>.")]
+            documento = await obter_documento_por_id(empresa["id"], int(args[1]))
+            if not documento:
+                return [_make_text_action("⚠️ Documento nao encontrado.")]
+            caminho = _caminho_documento(empresa["id"], documento["nome_arquivo"])
+            if not os.path.exists(caminho):
+                return [_make_text_action("⚠️ O arquivo nao foi encontrado no disco.")]
+            try:
+                quantidade_processada, avisos = await _reindexar_base_empresa(empresa["id"])
+            except Exception as exc:
+                logger.error("Erro ao reprocessar documento no WhatsApp: %s", exc, exc_info=True)
+                return [_make_text_action("❌ Nao foi possivel reprocessar esse documento agora.")]
+            return [
+                _make_text_action(
+                    f"✅ Documento reprocessado: {documento['nome_arquivo']}\n"
+                    f"{_resumo_reindexacao(quantidade_processada, avisos)}"
+                )
+            ]
+
+        if acao == "excluir":
+            if len(args) < 2 or not args[1].isdigit():
+                return [_make_text_action("⚠️ Use /documentos excluir <id>.")]
+            documento_id = int(args[1])
+            documento = await obter_documento_por_id(empresa["id"], documento_id)
+            if not documento:
+                return [_make_text_action("⚠️ Documento nao encontrado.")]
+            caminho = _caminho_documento(empresa["id"], documento["nome_arquivo"])
+            try:
+                if os.path.exists(caminho):
+                    os.remove(caminho)
+                removido = await excluir_documento(empresa["id"], documento_id)
+                if not removido:
+                    return [_make_text_action("⚠️ Documento nao encontrado.")]
+                quantidade_processada, avisos = await _reindexar_base_empresa(empresa["id"])
+            except Exception as exc:
+                logger.error("Erro ao excluir documento no WhatsApp: %s", exc, exc_info=True)
+                return [_make_text_action("❌ Nao foi possivel excluir esse documento agora.")]
+            return [
+                _make_text_action(
+                    f"🗑 Documento excluido: {documento['nome_arquivo']}\n"
+                    f"{_resumo_reindexacao(quantidade_processada, avisos)}"
+                )
+            ]
+
+    docs = await listar_documentos(empresa["id"])
+    if not docs:
+        return [
+            _make_text_action(
+                f"📭 Base de conhecimento - {empresa['nome']}\n\n"
+                "Nenhum documento enviado ainda.\n"
+                "Use /upload ou envie arquivos diretamente neste chat para comecar."
+            )
+        ]
+
+    linhas = [
+        f"📚 Base de conhecimento - {empresa['nome']}",
+        "",
+        "Comandos:",
+        "/documentos reindexar",
+        "/documentos reprocessar <id>",
+        "/documentos excluir <id>",
+        "",
+    ]
+    for documento in docs:
+        linhas.append(f"{documento['id']}. {documento['nome_arquivo']} - {documento['carregado_em']}")
+    return [_make_text_action("\n".join(linhas))]
+
+
+async def _cmd_upload(*, user_id: int, session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    _clear_session(session)
+    session.state = _STATE_UPLOAD_DOCUMENTO
+    return [
+        _make_text_action(
+            "📄 Envio de documentos\n\n"
+            "Envie seus arquivos agora, um de cada vez.\n"
+            f"Formatos aceitos: {listar_formatos_suportados()}.\n"
+            "Quando terminar, envie /pronto.\n"
+            "Voce tambem pode enviar documentos diretamente fora deste modo."
+        )
+    ]
+
+
+async def _cmd_imagem(
+    *,
+    user_id: int,
+    args: list[str],
+    session: WhatsAppSession,
+    message_type: str,
+    media_bytes: bytes | None,
+) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if args and args[0].lower() in {"remover", "apagar"}:
+        removida = excluir_imagem_empresa(empresa["id"])
+        if removida:
+            return [_make_text_action("✅ A imagem do seu agente foi removida.")]
+        return [_make_text_action("ℹ️ Seu agente nao tinha uma imagem configurada.")]
+
+    if message_type == "image" and media_bytes:
+        try:
+            salvar_imagem_empresa(empresa["id"], media_bytes)
+        except (ValueError, InputValidationError) as exc:
+            return [_make_text_action(f"⚠️ {exc}")]
+        preview = _image_action_from_path(
+            obter_caminho_imagem_empresa(empresa["id"]),
+            "Preview da imagem atual do seu agente.",
+        )
+        actions = [_make_text_action("✅ A imagem do seu agente foi atualizada com sucesso.")]
+        if preview:
+            actions.append(preview)
+        return actions
+
+    _clear_session(session)
+    session.state = _STATE_IMAGEM
+    return [
+        _make_text_action(
+            "🖼️ Imagem do agente\n\n"
+            "Envie uma imagem agora.\n"
+            "Se quiser remover a atual, use /imagem remover.\n"
+            "Se quiser sair, use /cancelar."
+        )
+    ]
+
+
+async def _cmd_editar(*, user_id: int, args: list[str], session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    if args:
+        campo = _resolve_edit_field(args[0])
+        if not campo:
+            return [_make_text_action("⚠️ Campo invalido. Use nome, bot, saudacao ou instrucoes.")]
+        if len(args) > 1:
+            try:
+                novo_valor = _apply_field_validation(campo, " ".join(args[1:]))
+            except InputValidationError as exc:
+                return [_make_text_action(f"⚠️ {exc.message}")]
+            await atualizar_empresa(empresa["id"], **{campo: novo_valor})
+            return [_make_text_action(f"✅ {_FIELD_LABELS[campo].title()} atualizado para: {novo_valor}")]
+
+        _clear_session(session)
+        session.state = _STATE_EDITAR_VALOR
+        session.data["campo_editando"] = campo
+        return [_make_text_action(f"📝 Envie o novo valor para {_FIELD_LABELS[campo]}.")]
+
+    _clear_session(session)
+    session.state = _STATE_EDITAR_CAMPO
+    return [
+        _make_text_action(
+            "⚙️ O que deseja editar?\n\n"
+            "Envie um destes campos: nome, bot, saudacao, instrucoes.\n"
+            "Ou use o formato direto: /editar nome Novo Nome"
+        )
+    ]
+
+
+async def _cmd_reset(*, user_id: int, session: WhatsAppSession) -> list[dict[str, str]]:
+    empresa = await obter_empresa_por_admin(user_id)
+    if not empresa:
+        empresa_cliente = await obter_empresa_do_cliente(user_id)
+        if empresa_cliente:
+            return [_make_text_action(_mensagem_somente_admin())]
+        return [_make_text_action("❌ Seu agente ainda nao foi configurado. Use /start primeiro.")]
+
+    _clear_session(session)
+    session.state = _STATE_RESET_CONFIRMACAO
+    return [
+        _make_text_action(
+            f"⚠️ Tem certeza que deseja apagar toda a configuracao de {empresa['nome']}?\n\n"
+            "Isso vai remover documentos, FAQs, historico e todos os dados associados.\n"
+            "Responda SIM para confirmar ou /cancelar para desistir."
+        )
+    ]
+
+
+async def _processar_interacao_agente(
+    *,
+    user_id: int,
+    text: str,
+    resolve_default_company: DefaultCompanyResolver,
+) -> list[dict[str, str]]:
+    if not text:
+        return [_make_text_action("No momento eu consigo responder apenas mensagens de texto.")]
+
+    rate_msg = verificar_rate_limit(limiter_mensagens, user_id)
+    if rate_msg:
+        return [_make_text_action(rate_msg)]
+
+    try:
+        pergunta = validar_mensagem_usuario(text)
+    except InputValidationError as exc:
+        return [_make_text_action(f"⚠️ {exc.message}")]
+
+    empresa = await obter_empresa_do_usuario(user_id)
+    usuario_admin = False
+    if empresa:
+        usuario_admin = empresa.get("telegram_user_id") == user_id
+    else:
+        empresa = await resolve_default_company()
+        if not empresa:
+            return [
+                _make_text_action(
+                    "👋 Este atendimento ainda nao esta configurado para voce.\n"
+                    "Se voce e o admin, envie /start. Se voce e cliente, envie /start TOKEN."
+                )
+            ]
+
+    resposta = await processar_pergunta(
+        empresa=empresa,
+        pergunta_bruta=pergunta,
+        usuario_id=user_id,
+        usuario_admin=usuario_admin,
+        faq_loader=listar_faqs,
+        registrar_conversa_fn=registrar_conversa,
+        rate_limit_checker=verificar_rate_limit,
+        message_validator=validar_mensagem_usuario,
+        document_checker=empresa_tem_documentos,
+        rag_responder=gerar_resposta,
+        skip_rate_limit=True,
+        skip_validation=True,
+    )
+    return [_make_text_action(resposta)]
+
+
+async def processar_mensagem_whatsapp(
+    *,
+    sender: str,
+    text: str,
+    message_type: str,
+    mime_type: str = "",
+    file_name: str = "",
+    media_bytes: bytes | None = None,
+    resolve_default_company: DefaultCompanyResolver,
+    share_link_builder: ShareLinkBuilder | None = None,
+) -> list[dict[str, str]]:
+    session = _touch_session(sender)
+    user_id = _coerce_whatsapp_user_id(sender)
+    texto = (text or "").strip()
+    comando, args = _parse_command(texto)
+
+    if comando == "cancelar":
+        _clear_session(session)
+        return [_make_text_action("❌ Operacao cancelada.")]
+
+    if comando == "pronto" and session.state == _STATE_UPLOAD_DOCUMENTO:
+        _clear_session(session)
+        return [
+            _make_text_action(
+                "✅ Upload concluido.\n\n"
+                "Seus documentos ja foram indexados.\n"
+                "Use /status para ver o estado atual ou envie uma pergunta para testar."
+            )
+        ]
+
+    if comando == "pular" and session.state == _STATE_ONBOARDING_INSTRUCOES:
+        return await _handle_state_message(
+            sender=sender,
+            user_id=user_id,
+            session=session,
+            text="/pular",
+            message_type=message_type,
+            mime_type=mime_type,
+            file_name=file_name,
+            media_bytes=media_bytes,
+        ) or []
+
+    if session.state == _STATE_ONBOARDING_CONFIRMACAO and comando in {"confirmar", "recomecar"}:
+        return await _handle_state_message(
+            sender=sender,
+            user_id=user_id,
+            session=session,
+            text=f"/{comando}",
+            message_type=message_type,
+            mime_type=mime_type,
+            file_name=file_name,
+            media_bytes=media_bytes,
+        ) or []
+
+    if session.state == _STATE_RESET_CONFIRMACAO and comando in {"sim", "confirmar"}:
+        return await _handle_state_message(
+            sender=sender,
+            user_id=user_id,
+            session=session,
+            text="/sim",
+            message_type=message_type,
+            mime_type=mime_type,
+            file_name=file_name,
+            media_bytes=media_bytes,
+        ) or []
+
+    if comando:
+        rate_msg = verificar_rate_limit(limiter_comandos, user_id)
+        if rate_msg:
+            return [_make_text_action(rate_msg)]
+
+        if comando == "start":
+            return await _cmd_start(sender=sender, user_id=user_id, args=args, session=session)
+        if comando == "registrar":
+            return await _cmd_registrar(user_id=user_id, session=session)
+        if comando == "sair":
+            return await _cmd_sair(user_id=user_id, session=session)
+        if comando == "ajuda":
+            return await _cmd_ajuda(user_id=user_id)
+        if comando == "meuid":
+            return await _cmd_meuid(sender=sender, user_id=user_id)
+        if comando == "link":
+            return await _cmd_link(user_id=user_id, share_link_builder=share_link_builder)
+        if comando == "painel":
+            return await _cmd_painel(user_id=user_id)
+        if comando == "status":
+            return await _cmd_status(user_id=user_id)
+        if comando == "pausar":
+            return await _cmd_pausar_ativar(user_id=user_id, ativo=False)
+        if comando == "ativar":
+            return await _cmd_pausar_ativar(user_id=user_id, ativo=True)
+        if comando == "horario":
+            return await _cmd_horario(user_id=user_id, args=args, session=session)
+        if comando == "fallback":
+            return await _cmd_fallback(user_id=user_id, args=args, session=session)
+        if comando == "faq":
+            return await _cmd_faq(user_id=user_id, args=args, session=session)
+        if comando == "documentos":
+            return await _cmd_documentos(user_id=user_id, args=args)
+        if comando == "upload":
+            return await _cmd_upload(user_id=user_id, session=session)
+        if comando == "imagem":
+            return await _cmd_imagem(
+                user_id=user_id,
+                args=args,
+                session=session,
+                message_type=message_type,
+                media_bytes=media_bytes,
+            )
+        if comando == "editar":
+            return await _cmd_editar(user_id=user_id, args=args, session=session)
+        if comando == "reset":
+            return await _cmd_reset(user_id=user_id, session=session)
+
+        return [_make_text_action("⚠️ Comando nao reconhecido. Use /ajuda para ver as opcoes.")]
+
+    state_result = await _handle_state_message(
+        sender=sender,
+        user_id=user_id,
+        session=session,
+        text=texto,
+        message_type=message_type,
+        mime_type=mime_type,
+        file_name=file_name,
+        media_bytes=media_bytes,
+    )
+    if state_result is not None:
+        return state_result
+
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    if message_type == "document" and media_bytes and empresa_admin:
+        return await _processar_documento_recebido(
+            user_id=user_id,
+            empresa=empresa_admin,
+            media_bytes=media_bytes,
+            file_name=_guess_filename(message_type, file_name, mime_type),
+            modo_upload=False,
+        )
+
+    if message_type == "image":
+        return [_make_text_action("No momento eu so trato imagens para /imagem. Para conversar, envie texto.")]
+
+    if message_type != "chat":
+        return [_make_text_action("No momento eu consigo responder apenas mensagens de texto.")]
+
+    return await _processar_interacao_agente(
+        user_id=user_id,
+        text=texto,
+        resolve_default_company=resolve_default_company,
+    )

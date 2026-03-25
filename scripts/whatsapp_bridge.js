@@ -7,7 +7,7 @@ const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "..", ".env") });
 
 const qrcode = require("qrcode-terminal");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DEFAULT_SESSION_DIR = path.join(ROOT_DIR, "data", "whatsapp-web-session");
@@ -75,6 +75,7 @@ function statusPayload() {
     bridgeUrl: `http://${bridgeHost}:${bridgePort}${bridgePath}`,
     sessionDir,
     clientId,
+    ownNumber: client.info?.wid?.user || null,
   };
 }
 
@@ -110,31 +111,69 @@ const client = new Client({
   },
 });
 
-async function askPythonBridge(message) {
-  const headers = {
-    "Content-Type": "application/json",
+async function buildPayload(message) {
+  const payload = {
+    sender: message.from,
+    message_id: message.id?._serialized || "",
+    text: String(message.body || "").trim(),
+    message_type: String(message.type || "chat"),
+    mime_type: "",
+    file_name: "",
+    media_base64: "",
   };
-  if (bridgeToken) {
-    headers.Authorization = `Bearer ${bridgeToken}`;
+
+  if (!message.hasMedia) {
+    return payload;
   }
 
-  const response = await fetch(`http://${bridgeHost}:${bridgePort}${bridgePath}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      sender: message.from,
-      message_id: message.id?._serialized || "",
-      text: String(message.body || "").trim(),
-    }),
-    signal: AbortSignal.timeout(120000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Bridge respondeu com HTTP ${response.status}`);
+  const media = await message.downloadMedia();
+  if (!media) {
+    return payload;
   }
 
-  const payload = await response.json();
-  return String(payload.reply || "").trim();
+  payload.mime_type = String(media.mimetype || "");
+  payload.file_name = String(media.filename || "");
+  payload.media_base64 = String(media.data || "");
+  return payload;
+}
+
+async function sendActions(message, actions) {
+  if (!Array.isArray(actions) || !actions.length) {
+    return;
+  }
+
+  const chat = await message.getChat();
+  for (const action of actions) {
+    if (!action || typeof action !== "object") {
+      continue;
+    }
+
+    if (action.type === "text") {
+      const text = String(action.text || "").trim();
+      if (!text) {
+        continue;
+      }
+      await chat.sendMessage(text, { quotedMessageId: message.id?._serialized || undefined });
+      continue;
+    }
+
+    if (action.type === "image") {
+      const mediaBase64 = String(action.media_base64 || "");
+      const mimeType = String(action.mime_type || "image/jpeg");
+      if (!mediaBase64) {
+        continue;
+      }
+      const media = new MessageMedia(
+        mimeType,
+        mediaBase64,
+        String(action.filename || "imagem.jpg"),
+      );
+      await chat.sendMessage(media, {
+        caption: String(action.caption || ""),
+        quotedMessageId: message.id?._serialized || undefined,
+      });
+    }
+  }
 }
 
 async function replyUnsupported(message) {
@@ -162,20 +201,39 @@ async function onMessage(message) {
     return;
   }
 
-  const text = String(message.body || "").trim();
-  if (!text) {
-    if (message.type !== "chat") {
-      await replyUnsupported(message);
-    }
-    return;
-  }
-
   try {
-    const reply = await askPythonBridge(message);
-    if (!reply) {
+    const response = await fetch(`http://${bridgeHost}:${bridgePort}${bridgePath}`, {
+      method: "POST",
+      headers: bridgeToken
+        ? {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${bridgeToken}`,
+          }
+        : { "Content-Type": "application/json" },
+      body: JSON.stringify(await buildPayload(message)),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Bridge respondeu com HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const actions = Array.isArray(payload.actions) ? payload.actions : [];
+    if (actions.length) {
+      await sendActions(message, actions);
       return;
     }
-    await message.reply(reply);
+
+    const reply = String(payload.reply || "").trim();
+    if (reply) {
+      await sendActions(message, [{ type: "text", text: reply }]);
+      return;
+    }
+
+    if (message.type !== "chat" && !message.hasMedia) {
+      await replyUnsupported(message);
+    }
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
     console.error("Falha ao encaminhar mensagem para o bridge Python:", error);

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import base64
 import json
 import logging
 import os
@@ -22,9 +22,9 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from agent_service import processar_pergunta
 from config import BASE_DIR, DATA_DIR
 from database import listar_empresas, obter_empresa_por_id, obter_empresa_por_link_token
+from whatsapp_flow import processar_mensagem_whatsapp
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +69,6 @@ def _truncate_text_message(text: str) -> str:
     if len(text) <= _MAX_TEXT_MESSAGE_LENGTH:
         return text
     return text[: _MAX_TEXT_MESSAGE_LENGTH - 3].rstrip() + "..."
-
-
-def _coerce_user_id(raw_value: str) -> int:
-    digits = "".join(char for char in (raw_value or "") if char.isdigit())
-    if digits:
-        return int(digits)
-
-    digest = hashlib.sha256((raw_value or "").encode("utf-8")).hexdigest()
-    return int(digest[:15], 16)
 
 
 def _resolve_path(value: str | None, default: str) -> str:
@@ -304,9 +295,9 @@ class WhatsAppWebBridgeServer:
             )
             return
 
-        future = asyncio.run_coroutine_threadsafe(self._build_reply(payload), self._event_loop)
+        future = asyncio.run_coroutine_threadsafe(self._build_actions(payload), self._event_loop)
         try:
-            reply = future.result()
+            actions = future.result()
         except Exception as exc:
             logger.error("Falha ao processar mensagem do WhatsApp Web: %s", exc, exc_info=True)
             self._write_json_response(
@@ -319,7 +310,18 @@ class WhatsAppWebBridgeServer:
         self._write_json_response(
             request,
             HTTPStatus.OK,
-            {"ok": True, "reply": reply},
+            {
+                "ok": True,
+                "reply": next(
+                    (
+                        action.get("text", "")
+                        for action in actions
+                        if action.get("type") == "text" and action.get("text")
+                    ),
+                    "",
+                ),
+                "actions": actions,
+            },
         )
 
     def _request_is_authorized(self, request: BaseHTTPRequestHandler) -> bool:
@@ -387,27 +389,42 @@ class WhatsAppWebBridgeServer:
 
         return None
 
-    async def _build_reply(self, payload: dict[str, Any]) -> str:
-        company = await self._resolve_company()
-        if not company:
-            raise RuntimeError("Nenhuma empresa resolvida para atendimento via WhatsApp.")
-
+    async def _build_actions(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         sender = str(payload.get("sender") or "").strip()
         text = _truncate_text_message(str(payload.get("text") or "").strip())
         message_id = str(payload.get("message_id") or "").strip()
+        message_type = str(payload.get("message_type") or "chat").strip() or "chat"
+        mime_type = str(payload.get("mime_type") or "").strip()
+        file_name = str(payload.get("file_name") or "").strip()
+        media_base64 = str(payload.get("media_base64") or "").strip()
+        media_bytes = None
+        if media_base64:
+            media_bytes = base64.b64decode(media_base64, validate=True)
 
-        if not sender or not text:
+        if not sender or (not text and message_type == "chat"):
             raise ValueError("Mensagem do WhatsApp Web incompleta.")
 
         if not self._mark_message_processed(message_id):
-            return ""
+            return []
 
-        return await processar_pergunta(
-            empresa=company,
-            pergunta_bruta=text,
-            usuario_id=_coerce_user_id(sender),
-            usuario_admin=False,
+        return await processar_mensagem_whatsapp(
+            sender=sender,
+            text=text,
+            message_type=message_type,
+            mime_type=mime_type,
+            file_name=file_name,
+            media_bytes=media_bytes,
+            resolve_default_company=self._resolve_company,
+            share_link_builder=self._build_share_link,
         )
+
+    def _build_share_link(self, token: str) -> str | None:
+        status = get_whatsapp_client_status(self.settings)
+        own_number = str(status.get("ownNumber") or "").strip() if status else ""
+        digits = "".join(char for char in own_number if char.isdigit())
+        if not digits:
+            return None
+        return f"https://wa.me/{digits}?text={quote(f'/start {token}')}"
 
 
 def is_whatsapp_client_running(settings: WhatsAppWebSettings) -> bool:
@@ -417,6 +434,18 @@ def is_whatsapp_client_running(settings: WhatsAppWebSettings) -> bool:
             return response.status == HTTPStatus.OK
     except (OSError, URLError):
         return False
+
+
+def get_whatsapp_client_status(settings: WhatsAppWebSettings) -> dict[str, Any] | None:
+    request = Request(settings.client_health_url, method="GET")
+    try:
+        with urlopen(request, timeout=2.0) as response:
+            if response.status != HTTPStatus.OK:
+                return None
+            payload = json.loads(response.read().decode("utf-8"))
+            return payload if isinstance(payload, dict) else None
+    except (OSError, URLError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 def _build_windows_launch_command(command: str) -> list[str]:

@@ -36,26 +36,22 @@ class WhatsAppWebBridgeServerTests(unittest.IsolatedAsyncioTestCase):
         server = WhatsAppWebBridgeServer(self._settings())
         try:
             with patch(
-                "whatsapp_web_bridge.listar_empresas",
+                "whatsapp_web_bridge.processar_mensagem_whatsapp",
                 new_callable=AsyncMock,
-                return_value=[make_empresa()],
-            ):
-                with patch(
-                    "whatsapp_web_bridge.processar_pergunta",
-                    new_callable=AsyncMock,
-                    return_value="Atendemos das 9h as 18h.",
-                ) as mock_process:
-                    reply = await server._build_reply(
-                        {
-                            "sender": "5511999999999@c.us",
-                            "message_id": "abc123",
-                            "text": "Qual o horario?",
-                        }
-                    )
+                return_value=[{"type": "text", "text": "Atendemos das 9h as 18h."}],
+            ) as mock_process:
+                reply = await server._build_actions(
+                    {
+                        "sender": "5511999999999@c.us",
+                        "message_id": "abc123",
+                        "text": "Qual o horario?",
+                        "message_type": "chat",
+                    }
+                )
         finally:
             server.shutdown()
 
-        self.assertEqual(reply, "Atendemos das 9h as 18h.")
+        self.assertEqual(reply, [{"type": "text", "text": "Atendemos das 9h as 18h."}])
         mock_process.assert_awaited_once()
 
     async def test_duplicate_message_id_returns_empty_reply(self):
@@ -64,34 +60,31 @@ class WhatsAppWebBridgeServerTests(unittest.IsolatedAsyncioTestCase):
         server = WhatsAppWebBridgeServer(self._settings())
         try:
             with patch(
-                "whatsapp_web_bridge.listar_empresas",
+                "whatsapp_web_bridge.processar_mensagem_whatsapp",
                 new_callable=AsyncMock,
-                return_value=[make_empresa()],
-            ):
-                with patch(
-                    "whatsapp_web_bridge.processar_pergunta",
-                    new_callable=AsyncMock,
-                    return_value="Resposta",
-                ) as mock_process:
-                    primeira = await server._build_reply(
-                        {
-                            "sender": "5511999999999@c.us",
-                            "message_id": "abc123",
-                            "text": "Oi",
-                        }
-                    )
-                    segunda = await server._build_reply(
-                        {
-                            "sender": "5511999999999@c.us",
-                            "message_id": "abc123",
-                            "text": "Oi",
-                        }
-                    )
+                return_value=[{"type": "text", "text": "Resposta"}],
+            ) as mock_process:
+                primeira = await server._build_actions(
+                    {
+                        "sender": "5511999999999@c.us",
+                        "message_id": "abc123",
+                        "text": "Oi",
+                        "message_type": "chat",
+                    }
+                )
+                segunda = await server._build_actions(
+                    {
+                        "sender": "5511999999999@c.us",
+                        "message_id": "abc123",
+                        "text": "Oi",
+                        "message_type": "chat",
+                    }
+                )
         finally:
             server.shutdown()
 
-        self.assertEqual(primeira, "Resposta")
-        self.assertEqual(segunda, "")
+        self.assertEqual(primeira, [{"type": "text", "text": "Resposta"}])
+        self.assertEqual(segunda, [])
         mock_process.assert_awaited_once()
 
     async def test_resolve_company_by_default_company_id(self):
