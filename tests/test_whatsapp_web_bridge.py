@@ -1,0 +1,126 @@
+"""Testes para o bridge local do WhatsApp Web."""
+import unittest
+from unittest.mock import AsyncMock, patch
+
+from tests.helpers import make_empresa
+
+
+class WhatsAppWebSettingsTests(unittest.TestCase):
+    @patch.dict("os.environ", {"WHATSAPP_WEB_ENABLED": "1"}, clear=True)
+    def test_enabled_uses_defaults(self):
+        from whatsapp_web_bridge import WhatsAppWebSettings
+
+        settings = WhatsAppWebSettings.from_env()
+
+        self.assertTrue(settings.enabled)
+        self.assertEqual(settings.bridge_port, 8010)
+        self.assertEqual(settings.bridge_path, "/bridge/whatsapp/message")
+        self.assertTrue(settings.auto_launch)
+
+
+class WhatsAppWebBridgeServerTests(unittest.IsolatedAsyncioTestCase):
+    def _settings(self, **kwargs):
+        from whatsapp_web_bridge import WhatsAppWebSettings
+
+        base_kwargs = {
+            "enabled": True,
+            "bridge_port": 0,
+            "auto_launch": False,
+        }
+        base_kwargs.update(kwargs)
+        return WhatsAppWebSettings(**base_kwargs)
+
+    async def test_build_reply_uses_unique_company(self):
+        from whatsapp_web_bridge import WhatsAppWebBridgeServer
+
+        server = WhatsAppWebBridgeServer(self._settings())
+        try:
+            with patch(
+                "whatsapp_web_bridge.listar_empresas",
+                new_callable=AsyncMock,
+                return_value=[make_empresa()],
+            ):
+                with patch(
+                    "whatsapp_web_bridge.processar_pergunta",
+                    new_callable=AsyncMock,
+                    return_value="Atendemos das 9h as 18h.",
+                ) as mock_process:
+                    reply = await server._build_reply(
+                        {
+                            "sender": "5511999999999@c.us",
+                            "message_id": "abc123",
+                            "text": "Qual o horario?",
+                        }
+                    )
+        finally:
+            server.shutdown()
+
+        self.assertEqual(reply, "Atendemos das 9h as 18h.")
+        mock_process.assert_awaited_once()
+
+    async def test_duplicate_message_id_returns_empty_reply(self):
+        from whatsapp_web_bridge import WhatsAppWebBridgeServer
+
+        server = WhatsAppWebBridgeServer(self._settings())
+        try:
+            with patch(
+                "whatsapp_web_bridge.listar_empresas",
+                new_callable=AsyncMock,
+                return_value=[make_empresa()],
+            ):
+                with patch(
+                    "whatsapp_web_bridge.processar_pergunta",
+                    new_callable=AsyncMock,
+                    return_value="Resposta",
+                ) as mock_process:
+                    primeira = await server._build_reply(
+                        {
+                            "sender": "5511999999999@c.us",
+                            "message_id": "abc123",
+                            "text": "Oi",
+                        }
+                    )
+                    segunda = await server._build_reply(
+                        {
+                            "sender": "5511999999999@c.us",
+                            "message_id": "abc123",
+                            "text": "Oi",
+                        }
+                    )
+        finally:
+            server.shutdown()
+
+        self.assertEqual(primeira, "Resposta")
+        self.assertEqual(segunda, "")
+        mock_process.assert_awaited_once()
+
+    async def test_resolve_company_by_default_company_id(self):
+        from whatsapp_web_bridge import WhatsAppWebBridgeServer
+
+        server = WhatsAppWebBridgeServer(self._settings(default_company_id=7))
+        try:
+            with patch(
+                "whatsapp_web_bridge.obter_empresa_por_id",
+                new_callable=AsyncMock,
+                return_value=make_empresa(empresa_id=7),
+            ) as mock_get:
+                company = await server._resolve_company()
+        finally:
+            server.shutdown()
+
+        mock_get.assert_awaited_once_with(7)
+        self.assertIsNotNone(company)
+        self.assertEqual(company["id"], 7)
+
+
+class LauncherTests(unittest.TestCase):
+    def test_does_not_launch_when_auto_launch_disabled(self):
+        from whatsapp_web_bridge import WhatsAppWebSettings, launch_whatsapp_client_in_new_terminal
+
+        settings = WhatsAppWebSettings(enabled=True, auto_launch=False)
+
+        with patch("whatsapp_web_bridge.subprocess.Popen") as mock_popen:
+            launched = launch_whatsapp_client_in_new_terminal(settings)
+
+        self.assertFalse(launched)
+        mock_popen.assert_not_called()

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -12,7 +13,11 @@ from config import BOT_VERSION, BUNDLED_ENV_PATH, ENV_PATH
 from database import init_db, listar_ids_admins, listar_ids_clientes
 from handlers import get_handlers
 from telegram_commands import configurar_menu_nativo_padrao, sincronizar_comandos_existentes
-from whatsapp_cloud_api import WhatsAppCloudSettings, WhatsAppWebhookServer
+from whatsapp_web_bridge import (
+    WhatsAppWebBridgeServer,
+    WhatsAppWebSettings,
+    launch_whatsapp_client_in_new_terminal,
+)
 
 load_dotenv(BUNDLED_ENV_PATH)
 if ENV_PATH != BUNDLED_ENV_PATH:
@@ -85,30 +90,33 @@ def main():
         raise ValueError("OPENROUTER_API_KEY não configurado no .env")
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    whatsapp_settings = WhatsAppCloudSettings.from_env()
+    whatsapp_settings = WhatsAppWebSettings.from_env()
 
     if not token and not whatsapp_settings.enabled:
         raise ValueError(
-            "Configure TELEGRAM_BOT_TOKEN no .env ou habilite WHATSAPP_CLOUD_API_ENABLED=1."
+            "Configure TELEGRAM_BOT_TOKEN no .env ou habilite WHATSAPP_WEB_ENABLED=1."
         )
 
     event_loop = _get_or_create_event_loop()
     event_loop.run_until_complete(init_db())
-    whatsapp_server: WhatsAppWebhookServer | None = None
+    whatsapp_server: WhatsAppWebBridgeServer | None = None
 
     if whatsapp_settings.enabled:
-        whatsapp_server = WhatsAppWebhookServer(whatsapp_settings)
+        whatsapp_server = WhatsAppWebBridgeServer(whatsapp_settings)
+        whatsapp_server.start_background()
+        launch_whatsapp_client_in_new_terminal(whatsapp_settings)
 
     if not token:
         if whatsapp_server is None:
             raise ValueError("Nenhum canal de atendimento foi configurado.")
 
         logger.info(
-            "AtendimentoBot v%s iniciado apenas com WhatsApp Cloud API. Pressione Ctrl+C para parar.",
+            "AtendimentoBot v%s iniciado apenas com WhatsApp Web. Pressione Ctrl+C para parar.",
             BOT_VERSION,
         )
         try:
-            whatsapp_server.serve_forever()
+            while True:
+                time.sleep(1)
         finally:
             whatsapp_server.shutdown()
         return
@@ -120,12 +128,11 @@ def main():
         app.add_handler(handler)
 
     if whatsapp_server is not None:
-        whatsapp_server.start_background()
         logger.info(
-            "Webhook do WhatsApp habilitado em http://%s:%s%s",
-            whatsapp_settings.webhook_host,
-            whatsapp_settings.webhook_port,
-            whatsapp_settings.webhook_path,
+            "Bridge local do WhatsApp habilitado em http://%s:%s%s",
+            whatsapp_settings.bridge_host,
+            whatsapp_settings.bridge_port,
+            whatsapp_settings.bridge_path,
         )
 
     logger.info("AtendimentoBot v%s iniciado! Pressione Ctrl+C para parar.", BOT_VERSION)

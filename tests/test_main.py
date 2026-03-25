@@ -47,7 +47,7 @@ class ErrorHandlerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MainFunctionTests(unittest.TestCase):
-    @patch("main.WhatsAppCloudSettings.from_env")
+    @patch("main.WhatsAppWebSettings.from_env")
     @patch("main.os.getenv", side_effect=lambda k, d=None: {"OPENROUTER_API_KEY": "router-key"}.get(k, d))
     def test_sem_token_gera_erro(self, mock_getenv, mock_whatsapp_settings):
         from main import main
@@ -69,24 +69,25 @@ class MainFunctionTests(unittest.TestCase):
     @patch.dict("os.environ", {"OPENROUTER_API_KEY": "router-key"}, clear=True)
     def test_inicia_apenas_whatsapp_quando_telegram_nao_configurado(self):
         from main import main
-        from whatsapp_cloud_api import WhatsAppCloudSettings
+        from whatsapp_web_bridge import WhatsAppWebSettings
 
-        settings = WhatsAppCloudSettings(
+        settings = WhatsAppWebSettings(
             enabled=True,
-            access_token="secret-token",
-            phone_number_id="1028026920393619",
-            verify_token="verify-me",
         )
 
         with patch("main.init_db", new_callable=AsyncMock) as mock_init:
-            with patch("main.WhatsAppCloudSettings.from_env", return_value=settings):
-                with patch("main.WhatsAppWebhookServer") as mock_server_cls:
-                    server = mock_server_cls.return_value
-                    main()
+            with patch("main.WhatsAppWebSettings.from_env", return_value=settings):
+                with patch("main.WhatsAppWebBridgeServer") as mock_server_cls:
+                    with patch("main.launch_whatsapp_client_in_new_terminal") as mock_launch:
+                        with patch("main.time.sleep", side_effect=KeyboardInterrupt):
+                            server = mock_server_cls.return_value
+                            with self.assertRaises(KeyboardInterrupt):
+                                main()
 
         mock_init.assert_awaited_once()
         mock_server_cls.assert_called_once_with(settings)
-        server.serve_forever.assert_called_once()
+        server.start_background.assert_called_once()
+        mock_launch.assert_called_once_with(settings)
         server.shutdown.assert_called_once()
 
 

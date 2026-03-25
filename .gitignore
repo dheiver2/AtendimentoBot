@@ -19,6 +19,7 @@ data/
 # ── Build / distribuição ──
 build/
 dist/
+node_modules/
 
 # ── Caches de ferramentas ──
 .pytest_cache/
