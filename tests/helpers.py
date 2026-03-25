@@ -1,15 +1,14 @@
 """Helpers compartilhados para testes — mocks de Update, Context e objetos do Telegram."""
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 def make_message(text="", user_id=100):
     """Cria um mock de Message do Telegram."""
-    msg = AsyncMock()
+    msg = MagicMock()
     msg.text = text
     msg.reply_text = AsyncMock()
     msg.reply_photo = AsyncMock()
-    msg.chat = AsyncMock()
+    msg.chat = MagicMock()
     msg.chat.id = user_id
     msg.chat.send_action = AsyncMock()
     return msg
@@ -32,7 +31,7 @@ def make_update(text="", user_id=100, callback_data=None):
     update.message = update.effective_message
 
     if callback_data is not None:
-        query = AsyncMock()
+        query = MagicMock()
         query.data = callback_data
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -49,7 +48,7 @@ def make_context(user_data=None, args=None):
     ctx = MagicMock()
     ctx.user_data = user_data if user_data is not None else {}
     ctx.args = args
-    ctx.bot = AsyncMock()
+    ctx.bot = MagicMock()
     ctx.bot.get_me = AsyncMock(return_value=MagicMock(username="test_bot"))
     ctx.error = None
     return ctx

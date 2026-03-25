@@ -1,7 +1,7 @@
 """Handlers de gestão de FAQs."""
 import logging
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import (
@@ -13,19 +13,19 @@ from database import (
 )
 from rate_limiter import limiter_faq, verificar_rate_limit
 from validators import (
-    InputValidationError,
     MAX_FAQS_POR_EMPRESA,
+    InputValidationError,
     validar_faq_pergunta,
     validar_faq_resposta,
 )
 
+from .agent import invalidar_cache_faq
 from .common import (
     AGUARDANDO_FAQ_PERGUNTA,
     AGUARDANDO_FAQ_RESPOSTA,
     _editar_ou_responder,
     _obter_empresa_admin_ou_responder,
 )
-from .agent import invalidar_cache_faq
 
 logger = logging.getLogger(__name__)
 

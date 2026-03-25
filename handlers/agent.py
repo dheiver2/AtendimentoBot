@@ -17,13 +17,22 @@ from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
 from response_intelligence import (
     buscar_resposta_faq as _buscar_resposta_faq_inteligencia,
+)
+from response_intelligence import (
     decidir_resposta,
-    detectar_pergunta_horario as _detectar_pergunta_horario_inteligencia,
+)
+from response_intelligence import (
     detectar_pedido_humano as _detectar_pedido_humano_inteligencia,
+)
+from response_intelligence import (
+    detectar_pergunta_horario as _detectar_pergunta_horario_inteligencia,
+)
+from response_intelligence import (
     normalizar_texto as _normalizar_texto_inteligencia,
 )
 from validators import InputValidationError, validar_mensagem_usuario
 from vector_store import VectorStoreIncompatibilityError, empresa_tem_documentos
+
 logger = logging.getLogger(__name__)
 _FAQ_CACHE_TTL_SECONDS = 30
 
@@ -116,7 +125,8 @@ def _formatar_resposta_sem_base(empresa: dict, usuario_admin: bool) -> str:
 
 def _instrucoes_operacionais_empresa(empresa: dict) -> str:
     """Adiciona horário/fallback às instruções do agente quando configurados."""
-    extras = []
+    instrucoes_base = str(empresa.get("instrucoes") or "")
+    extras: list[str] = []
     if empresa.get("horario_atendimento"):
         extras.append(f"Horário de atendimento da empresa: {empresa['horario_atendimento']}.")
     if empresa.get("fallback_contato"):
@@ -126,9 +136,9 @@ def _instrucoes_operacionais_empresa(empresa: dict) -> str:
         )
 
     if not extras:
-        return empresa["instrucoes"]
+        return instrucoes_base
 
-    return f"{empresa['instrucoes']}\n\nINFORMAÇÕES OPERACIONAIS:\n- " + "\n- ".join(extras)
+    return f"{instrucoes_base}\n\nINFORMAÇÕES OPERACIONAIS:\n- " + "\n- ".join(extras)
 
 
 async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, resposta: str):

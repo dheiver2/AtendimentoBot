@@ -5,8 +5,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import (
-    criar_empresa,
     atualizar_empresa,
+    criar_empresa,
     desvincular_cliente,
     excluir_empresa_com_dados,
     obter_empresa_do_cliente,
@@ -34,9 +34,9 @@ from .common import (
     _enviar_boas_vindas_cliente,
     _limpar_estado_usuario,
     _mensagem_somente_admin,
+    _obter_empresa_admin_ou_responder,
     _obter_payload_start,
     _remover_arquivos_empresa,
-    _obter_empresa_admin_ou_responder,
     _sincronizar_comandos_do_chat,
 )
 

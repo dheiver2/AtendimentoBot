@@ -1,7 +1,15 @@
 import secrets
 
 import aiosqlite
+
 from config import DB_PATH
+
+
+def _coerce_lastrowid(valor: int | None) -> int:
+    """Normaliza IDs gerados pelo SQLite para inteiro válido."""
+    if valor is None:
+        raise RuntimeError("Falha ao obter o ID gerado pelo banco.")
+    return valor
 
 
 async def _obter_colunas_tabela(db: aiosqlite.Connection, nome_tabela: str) -> set[str]:
@@ -245,7 +253,7 @@ async def criar_empresa(nome: str, telegram_user_id: int) -> int:
             (nome, telegram_user_id, link_token),
         )
         await db.commit()
-        return cursor.lastrowid
+        return _coerce_lastrowid(cursor.lastrowid)
 
 
 async def obter_empresa_por_admin(telegram_user_id: int) -> dict | None:
@@ -348,7 +356,7 @@ async def desvincular_cliente(cliente_telegram_user_id: int) -> bool:
             (cliente_telegram_user_id,),
         )
         await db.commit()
-        return cursor.rowcount > 0
+        return bool(cursor.rowcount > 0)
 
 
 async def obter_empresa_do_usuario(telegram_user_id: int) -> dict | None:
@@ -443,14 +451,14 @@ async def registrar_documento(empresa_id: int, nome_arquivo: str) -> int:
                 (existente["id"],),
             )
             await db.commit()
-            return existente["id"]
+            return int(existente["id"])
 
         cursor = await db.execute(
             "INSERT INTO documentos (empresa_id, nome_arquivo) VALUES (?, ?)",
             (empresa_id, nome_arquivo),
         )
         await db.commit()
-        return cursor.lastrowid
+        return _coerce_lastrowid(cursor.lastrowid)
 
 
 async def listar_documentos(empresa_id: int) -> list[dict]:
@@ -485,7 +493,7 @@ async def excluir_documento(empresa_id: int, documento_id: int) -> bool:
             (empresa_id, documento_id),
         )
         await db.commit()
-        return cursor.rowcount > 0
+        return bool(cursor.rowcount > 0)
 
 
 async def registrar_conversa(empresa_id: int, usuario_telegram_id: int, mensagem: str, resposta: str):
@@ -563,7 +571,7 @@ async def criar_faq(empresa_id: int, pergunta: str, resposta: str) -> int:
             (empresa_id, pergunta, resposta),
         )
         await db.commit()
-        return cursor.lastrowid
+        return _coerce_lastrowid(cursor.lastrowid)
 
 
 async def listar_faqs(empresa_id: int) -> list[dict]:
@@ -586,7 +594,7 @@ async def excluir_faq(empresa_id: int, faq_id: int) -> bool:
             (empresa_id, faq_id),
         )
         await db.commit()
-        return cursor.rowcount > 0
+        return bool(cursor.rowcount > 0)
 
 
 async def limpar_faqs(empresa_id: int) -> int:
@@ -597,7 +605,7 @@ async def limpar_faqs(empresa_id: int) -> int:
             (empresa_id,),
         )
         await db.commit()
-        return cursor.rowcount
+        return int(cursor.rowcount)
 
 
 async def excluir_empresa_com_dados(empresa_id: int):

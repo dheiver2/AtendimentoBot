@@ -1,10 +1,10 @@
 """Testes para handlers/documents.py — upload e gestão de documentos."""
-import os
 import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from telegram.ext import ConversationHandler
 
-from tests.helpers import make_update, make_context, make_empresa
+from tests.helpers import make_context, make_empresa, make_update
 
 
 class CaminhoDocumentoTests(unittest.TestCase):
@@ -58,8 +58,8 @@ class CmdUploadTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.documents._obter_empresa_admin_ou_responder")
     async def test_inicia_upload(self, mock_admin):
-        from handlers.documents import cmd_upload
         from handlers.common import AGUARDANDO_DOCUMENTO
+        from handlers.documents import cmd_upload
 
         mock_admin.return_value = make_empresa()
         update = make_update()
@@ -92,7 +92,7 @@ class ReceberDocumentoTests(unittest.IsolatedAsyncioTestCase):
         from handlers.documents import receber_documento
         update = make_update()
         ctx = make_context(user_data={"empresa_upload_id": 1})
-        result = await receber_documento(update, ctx)
+        await receber_documento(update, ctx)
         mock_proc.assert_called_once_with(update, 1, modo_upload=True)
 
 
@@ -129,8 +129,8 @@ class ProcessarDocumentoEnviadoTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.documents.arquivo_suportado", return_value=False)
     async def test_formato_nao_suportado(self, mock_sup):
-        from handlers.documents import _processar_documento_enviado
         from handlers.common import AGUARDANDO_DOCUMENTO
+        from handlers.documents import _processar_documento_enviado
 
         update = self._make_doc_update("arquivo.xyz")
         result = await _processar_documento_enviado(update, 1, modo_upload=True)

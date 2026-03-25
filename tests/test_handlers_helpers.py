@@ -4,24 +4,24 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import handlers.common as handlers_common
+from handlers.agent import (
+    _buscar_resposta_faq,
+    _detectar_pedido_humano,
+    _detectar_pergunta_horario,
+    _formatar_resposta_pausado,
+    _formatar_resposta_sem_base,
+    _instrucoes_operacionais_empresa,
+    _normalizar_texto,
+)
 from handlers.common import (
     _limpar_estado_usuario,
     _montar_link_atendimento,
     _remover_arquivos_empresa,
     _teclado_painel,
 )
-from handlers.agent import (
-    _buscar_resposta_faq,
-    _formatar_resposta_sem_base,
-    _normalizar_texto,
-    _detectar_pedido_humano,
-    _detectar_pergunta_horario,
-    _formatar_resposta_pausado,
-    _instrucoes_operacionais_empresa,
-)
-from handlers.documents import _teclado_documentos, _reindexar_base_empresa
+from handlers.documents import _reindexar_base_empresa, _teclado_documentos
 from handlers.faq import _teclado_faqs
-import handlers.common as handlers_common
 
 
 class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):

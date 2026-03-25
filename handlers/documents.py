@@ -2,16 +2,16 @@
 import logging
 import os
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
+from config import PDFS_DIR
 from database import (
     excluir_documento,
     listar_documentos,
     obter_documento_por_id,
     registrar_documento,
 )
-from config import PDFS_DIR
 from document_processor import (
     arquivo_suportado,
     listar_formatos_suportados,
@@ -19,7 +19,7 @@ from document_processor import (
     processar_documento_salvo,
 )
 from rate_limiter import limiter_upload, verificar_rate_limit
-from validators import InputValidationError, MAX_DOCUMENTOS_POR_EMPRESA
+from validators import MAX_DOCUMENTOS_POR_EMPRESA, InputValidationError
 from vector_store import adicionar_documentos, substituir_documentos
 
 from .common import (

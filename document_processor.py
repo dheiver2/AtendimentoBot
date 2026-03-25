@@ -116,7 +116,7 @@ def dividir_texto_em_chunks(
         chunk_overlap=chunk_overlap,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-    return splitter.split_text(texto)
+    return [str(chunk) for chunk in splitter.split_text(texto)]
 
 
 def processar_documento(empresa_id: int, nome_arquivo: str, conteudo_bytes: bytes) -> list[str]:

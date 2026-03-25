@@ -1,22 +1,21 @@
 """Utilitários compartilhados entre os handlers do bot."""
-from io import BytesIO
 import logging
 import os
 import shutil
-import textwrap
+from io import BytesIO
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from bot_profile_photo import obter_caminho_imagem_empresa
 from config import IMAGES_DIR, PDFS_DIR, VECTOR_STORES_DIR
 from database import (
     obter_empresa_do_cliente,
     obter_empresa_por_admin,
 )
-from bot_profile_photo import obter_caminho_imagem_empresa
-from telegram_commands import sincronizar_comandos_chat
+from telegram_commands import PerfilComando, sincronizar_comandos_chat
 
 logger = logging.getLogger(__name__)
 IDENTIDADE_VISUAL_ENVIADA_KEY = "identidade_visual_enviada"
@@ -84,7 +83,7 @@ def _mensagem_somente_admin() -> str:
 async def _sincronizar_comandos_do_chat(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    perfil: str,
+    perfil: PerfilComando,
 ):
     """Atualiza o menu de comandos do chat conforme o perfil atual."""
     chat = update.effective_chat

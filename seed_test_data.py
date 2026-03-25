@@ -3,9 +3,9 @@ Script de seed para popular o banco de dados com dados de teste.
 Usa apenas sqlite3 nativo (sem dependências externas).
 """
 
-import sqlite3
 import secrets
-import os
+import sqlite3
+from typing import Any
 
 DB_PATH_ORIGINAL = "/sessions/exciting-festive-hypatia/mnt/agente-atendimento-ao-cliente/data/bot.db"
 DB_PATH = "/tmp/bot_seed.db"  # Trabalha em cópia local para evitar problemas de I/O no FS Windows
@@ -14,7 +14,7 @@ DB_PATH = "/tmp/bot_seed.db"  # Trabalha em cópia local para evitar problemas d
 # DADOS DE TESTE
 # ─────────────────────────────────────────────
 
-EMPRESAS = [
+EMPRESAS: list[dict[str, Any]] = [
     {
         "nome": "TechStore Brasil",
         "telegram_user_id": 100000001,
@@ -245,6 +245,8 @@ def criar_empresa(conn: sqlite3.Connection, dados: dict) -> int:
          dados["fallback_contato"]),
     )
     conn.commit()
+    if cur.lastrowid is None:
+        raise RuntimeError("Falha ao obter o ID gerado para a empresa de teste.")
     return cur.lastrowid
 
 
@@ -364,7 +366,7 @@ def main():
     total_conversas_geral = sum(r["total_conversas"] for r in resultados)
     total_docs_geral = sum(r["total_documentos"] for r in resultados)
 
-    print(f"\n📊 Totais gerais:")
+    print("\n📊 Totais gerais:")
     print(f"   Empresas   : {len(resultados)}")
     print(f"   Clientes   : {total_clientes_geral}")
     print(f"   FAQs       : {total_faqs_geral}")
@@ -378,7 +380,7 @@ def main():
         print(f"│   Link Token        : {r['link_token']}")
         print(f"│   Link Telegram     : https://t.me/<seu_bot>?start={r['link_token']}")
         print(f"│   Clientes ({r['total_clientes']})        FAQs ({r['total_faqs']})   Conversas ({r['total_conversas']})")
-        print(f"│")
+        print("│")
         for c in r["clientes"]:
             print(f"│   👤 {c['nome']:25s} → Telegram ID: {c['telegram_user_id']}")
         print(f"└{'─' * 55}")

@@ -1,9 +1,11 @@
 """Testes para handlers/common.py — utilitários compartilhados."""
-from io import BytesIO
+import os
+import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
+from io import BytesIO
+from unittest.mock import AsyncMock, patch
 
-from tests.helpers import make_update, make_context, make_empresa
+from tests.helpers import make_context, make_empresa, make_update
 
 
 class ObterPayloadStartTests(unittest.TestCase):
@@ -106,6 +108,18 @@ class EnviarBoasVindasClienteTests(unittest.IsolatedAsyncioTestCase):
         msg.reply_text.assert_not_called()
 
 
+class TextoBoasVindasClienteTests(unittest.TestCase):
+    def test_sem_documentos_inclui_fallback(self):
+        from handlers.common import _montar_texto_boas_vindas_cliente
+
+        empresa = make_empresa(nome="MinhaEmpresa", saudacao="Bem-vindo!", fallback_contato="(11) 9999-9999")
+
+        texto = _montar_texto_boas_vindas_cliente(empresa, tem_docs=False)
+
+        self.assertIn("ainda está sendo preparado", texto)
+        self.assertIn("(11) 9999-9999", texto)
+
+
 class IdentidadeVisualEmpresaTests(unittest.IsolatedAsyncioTestCase):
     async def test_nao_reenvia_quando_ja_enviada_na_sessao(self):
         from handlers.common import _enviar_identidade_visual_empresa
@@ -134,6 +148,36 @@ class IdentidadeVisualEmpresaTests(unittest.IsolatedAsyncioTestCase):
         msg.reply_photo.assert_called_once()
 
 
+class CapaEmpresaTests(unittest.TestCase):
+    @patch("handlers.common.obter_caminho_imagem_empresa", return_value="/tmp/arquivo-inexistente.jpg")
+    def test_gera_capa_sem_imagem_personalizada(self, mock_caminho):
+        from handlers.common import _gerar_capa_empresa
+
+        capa = _gerar_capa_empresa(make_empresa(nome="MinhaEmpresa", saudacao="Bem-vindo!"))
+
+        self.assertIsInstance(capa, BytesIO)
+        self.assertGreater(len(capa.getvalue()), 0)
+
+
+class PreviewImagemEmpresaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_envia_preview_quando_imagem_existe(self):
+        from handlers.common import _enviar_preview_imagem_empresa
+
+        mensagem = AsyncMock()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as arquivo:
+            arquivo.write(b"conteudo-imagem")
+            caminho = arquivo.name
+
+        try:
+            with patch("handlers.common.obter_caminho_imagem_empresa", return_value=caminho):
+                enviado = await _enviar_preview_imagem_empresa(mensagem, empresa_id=1, legenda="Preview atual")
+        finally:
+            os.unlink(caminho)
+
+        self.assertTrue(enviado)
+        mensagem.reply_photo.assert_called_once()
+
+
 class SincronizarComandosChatTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.common.sincronizar_comandos_chat", new_callable=AsyncMock)
     async def test_chama_sincronizar(self, mock_sync):
@@ -150,6 +194,18 @@ class SincronizarComandosChatTests(unittest.IsolatedAsyncioTestCase):
         ctx = make_context()
         # Não deve lançar exceção
         await _sincronizar_comandos_do_chat(update, ctx, "admin")
+
+    @patch("handlers.common.sincronizar_comandos_chat", new_callable=AsyncMock)
+    async def test_sem_chat_nao_sincroniza(self, mock_sync):
+        from handlers.common import _sincronizar_comandos_do_chat
+
+        update = make_update()
+        update.effective_chat = None
+        ctx = make_context()
+
+        await _sincronizar_comandos_do_chat(update, ctx, "cliente")
+
+        mock_sync.assert_not_called()
 
 
 class MontarLinkAtendimentoTests(unittest.TestCase):

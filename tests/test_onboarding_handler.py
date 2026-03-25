@@ -1,9 +1,10 @@
 """Testes para handlers/onboarding.py — registro de empresa."""
 import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
+
 from telegram.ext import ConversationHandler
 
-from tests.helpers import make_update, make_context, make_empresa
+from tests.helpers import make_context, make_empresa, make_update
 
 
 class CmdStartTests(unittest.IsolatedAsyncioTestCase):
@@ -14,7 +15,6 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding._obter_payload_start", return_value=None)
     async def test_admin_existente_ve_mensagem_ativa(self, mock_payload, mock_admin, mock_cliente, mock_sync):
         from handlers.onboarding import cmd_start
-        from handlers.common import AGUARDANDO_NOME_EMPRESA
 
         empresa = make_empresa(nome="Acme")
         mock_admin.return_value = empresa
@@ -36,7 +36,7 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
         mock_cliente.return_value = make_empresa(nome="TestCorp")
         update = make_update()
         ctx = make_context()
-        with patch("handlers.onboarding._enviar_boas_vindas_cliente", new_callable=AsyncMock) as mock_bv:
+        with patch("handlers.onboarding._enviar_boas_vindas_cliente", new_callable=AsyncMock):
             result = await cmd_start(update, ctx)
         self.assertEqual(result, ConversationHandler.END)
         self.assertTrue(ctx.user_data["identidade_visual_enviada"])
@@ -79,8 +79,8 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding._obter_payload_start", return_value=None)
     async def test_novo_usuario_inicia_onboarding(self, mock_payload, mock_admin, mock_cliente, mock_sync):
-        from handlers.onboarding import cmd_start
         from handlers.common import AGUARDANDO_NOME_EMPRESA
+        from handlers.onboarding import cmd_start
 
         update = make_update()
         ctx = make_context()
@@ -90,8 +90,8 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
 
 class ReceberNomeEmpresaTests(unittest.IsolatedAsyncioTestCase):
     async def test_nome_valido_avanca(self):
-        from handlers.onboarding import receber_nome_empresa
         from handlers.common import AGUARDANDO_NOME_BOT
+        from handlers.onboarding import receber_nome_empresa
 
         update = make_update("Minha Empresa")
         ctx = make_context()
@@ -100,8 +100,8 @@ class ReceberNomeEmpresaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.user_data["nome_empresa"], "Minha Empresa")
 
     async def test_nome_vazio_repete(self):
-        from handlers.onboarding import receber_nome_empresa
         from handlers.common import AGUARDANDO_NOME_EMPRESA
+        from handlers.onboarding import receber_nome_empresa
 
         update = make_update("   ")
         ctx = make_context()
@@ -111,8 +111,8 @@ class ReceberNomeEmpresaTests(unittest.IsolatedAsyncioTestCase):
 
 class ReceberNomeBotTests(unittest.IsolatedAsyncioTestCase):
     async def test_nome_bot_valido(self):
-        from handlers.onboarding import receber_nome_bot
         from handlers.common import AGUARDANDO_SAUDACAO
+        from handlers.onboarding import receber_nome_bot
 
         update = make_update("Ana")
         ctx = make_context()
@@ -123,8 +123,8 @@ class ReceberNomeBotTests(unittest.IsolatedAsyncioTestCase):
 
 class ReceberSaudacaoTests(unittest.IsolatedAsyncioTestCase):
     async def test_saudacao_valida(self):
-        from handlers.onboarding import receber_saudacao
         from handlers.common import AGUARDANDO_INSTRUCOES
+        from handlers.onboarding import receber_saudacao
 
         update = make_update("Olá, bem-vindo!")
         ctx = make_context()
@@ -134,8 +134,8 @@ class ReceberSaudacaoTests(unittest.IsolatedAsyncioTestCase):
 
 class ReceberInstrucoesTests(unittest.IsolatedAsyncioTestCase):
     async def test_instrucoes_validas_mostra_resumo(self):
-        from handlers.onboarding import receber_instrucoes
         from handlers.common import AGUARDANDO_CONFIRMACAO_REGISTRO
+        from handlers.onboarding import receber_instrucoes
 
         update = make_update("Responda sempre de forma educada")
         ctx = make_context(user_data={
@@ -153,8 +153,8 @@ class ReceberInstrucoesTests(unittest.IsolatedAsyncioTestCase):
 
 class PularInstrucoesTests(unittest.IsolatedAsyncioTestCase):
     async def test_pular_define_instrucoes_padrao_e_mostra_resumo(self):
-        from handlers.onboarding import pular_instrucoes
         from handlers.common import AGUARDANDO_CONFIRMACAO_REGISTRO
+        from handlers.onboarding import pular_instrucoes
 
         update = make_update("/pular")
         ctx = make_context(user_data={
@@ -182,8 +182,8 @@ class CancelarRegistroTests(unittest.IsolatedAsyncioTestCase):
 class CmdResetTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding._obter_empresa_admin_ou_responder")
     async def test_reset_pede_confirmacao(self, mock_admin):
-        from handlers.onboarding import cmd_reset
         from handlers.common import AGUARDANDO_CONFIRMACAO_RESET
+        from handlers.onboarding import cmd_reset
 
         mock_admin.return_value = make_empresa(nome="Old Corp")
         update = make_update("/reset")
@@ -210,8 +210,8 @@ class ResetCallbacksTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding.excluir_empresa_com_dados", new_callable=AsyncMock)
     @patch("handlers.onboarding._remover_arquivos_empresa")
     async def test_reset_confirmado_apaga_e_reinicia(self, mock_rm, mock_excl, mock_admin, mock_sync):
-        from handlers.onboarding import reset_confirmar_callback
         from handlers.common import AGUARDANDO_NOME_EMPRESA
+        from handlers.onboarding import reset_confirmar_callback
 
         mock_admin.return_value = make_empresa(nome="Old Corp")
         update = make_update("/reset", callback_data="reset_confirmar")

@@ -1,5 +1,6 @@
 import os
 import shutil
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 
 from langchain_community.vectorstores import FAISS
@@ -51,12 +52,16 @@ def _carregar_store_cache(assinatura: tuple[str, float, float]) -> FAISS:
     return FAISS.load_local(caminho, embeddings, allow_dangerous_deserialization=True)
 
 
-def adicionar_documentos(empresa_id: int, chunks: list[str], metadados: dict | None = None):
+def adicionar_documentos(
+    empresa_id: int,
+    chunks: list[str],
+    metadados: Mapping[str, object] | None = None,
+):
     """Adiciona chunks ao vector store da empresa. Cria se não existir."""
     embeddings = _get_embeddings()
     caminho = _caminho_store(empresa_id)
 
-    meta_list = [metadados or {} for _ in chunks]
+    meta_list = [dict(metadados or {}) for _ in chunks]
 
     if os.path.exists(caminho):
         store = _carregar_store_cache(_assinatura_store(caminho))
@@ -68,7 +73,10 @@ def adicionar_documentos(empresa_id: int, chunks: list[str], metadados: dict | N
     _carregar_store_cache.cache_clear()
 
 
-def substituir_documentos(empresa_id: int, documentos: list[tuple[list[str], dict | None]]):
+def substituir_documentos(
+    empresa_id: int,
+    documentos: Sequence[tuple[list[str], Mapping[str, object] | None]],
+):
     """Reconstrói o vector store da empresa a partir de uma nova lista de documentos."""
     caminho = _caminho_store(empresa_id)
     if os.path.exists(caminho):
@@ -80,13 +88,13 @@ def substituir_documentos(empresa_id: int, documentos: list[tuple[list[str], dic
 
     embeddings = _get_embeddings()
     textos: list[str] = []
-    metadados: list[dict] = []
+    metadados: list[dict[str, object]] = []
 
     for chunks, meta in documentos:
         if not chunks:
             continue
         textos.extend(chunks)
-        metadados.extend([(meta or {}) for _ in chunks])
+        metadados.extend([dict(meta or {}) for _ in chunks])
 
     if not textos:
         return

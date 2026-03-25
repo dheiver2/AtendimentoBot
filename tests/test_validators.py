@@ -1,12 +1,15 @@
 import unittest
 
 from validators import (
+    MAX_DOCUMENT_SIZE_BYTES,
+    MAX_IMAGE_SIZE_BYTES,
+    MAX_NOME_EMPRESA,
     InputValidationError,
     sanitizar_nome_arquivo,
     sanitizar_texto,
+    validar_fallback,
     validar_faq_pergunta,
     validar_faq_resposta,
-    validar_fallback,
     validar_horario,
     validar_instrucoes,
     validar_mensagem_usuario,
@@ -15,9 +18,6 @@ from validators import (
     validar_saudacao,
     validar_tamanho_documento,
     validar_tamanho_imagem,
-    MAX_NOME_EMPRESA,
-    MAX_DOCUMENT_SIZE_BYTES,
-    MAX_IMAGE_SIZE_BYTES,
 )
 
 

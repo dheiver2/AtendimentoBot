@@ -1,9 +1,10 @@
 """Testes para handlers/settings.py — pausar, ativar, horário, fallback, editar."""
 import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
+
 from telegram.ext import ConversationHandler
 
-from tests.helpers import make_update, make_context, make_empresa
+from tests.helpers import make_context, make_empresa, make_update
 
 
 class DefinirStatusAgenteTests(unittest.IsolatedAsyncioTestCase):
@@ -114,8 +115,8 @@ class CmdHorarioTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.settings._obter_empresa_admin_ou_responder")
     async def test_sem_args_pergunta_horario(self, mock_admin):
-        from handlers.settings import cmd_horario
         from handlers.common import AGUARDANDO_HORARIO
+        from handlers.settings import cmd_horario
 
         mock_admin.return_value = make_empresa()
         update = make_update()
@@ -164,8 +165,8 @@ class CmdFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.settings._obter_empresa_admin_ou_responder")
     async def test_sem_args_pergunta_fallback(self, mock_admin):
-        from handlers.settings import cmd_fallback
         from handlers.common import AGUARDANDO_FALLBACK
+        from handlers.settings import cmd_fallback
 
         mock_admin.return_value = make_empresa()
         update = make_update()
@@ -192,8 +193,8 @@ class ReceberFallbackTests(unittest.IsolatedAsyncioTestCase):
 class CmdEditarTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.settings._obter_empresa_admin_ou_responder")
     async def test_mostra_opcoes(self, mock_admin):
-        from handlers.settings import cmd_editar
         from handlers.common import EDITANDO_CAMPO
+        from handlers.settings import cmd_editar
 
         mock_admin.return_value = make_empresa()
         update = make_update()
@@ -221,8 +222,8 @@ class EditarCampoCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, ConversationHandler.END)
 
     async def test_campo_valido(self):
-        from handlers.settings import editar_campo_callback
         from handlers.common import EDITANDO_CAMPO
+        from handlers.settings import editar_campo_callback
 
         update = make_update(callback_data="editar_nome")
         ctx = make_context()

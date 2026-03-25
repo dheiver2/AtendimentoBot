@@ -1,7 +1,7 @@
 """Handlers de configurações operacionais — horário, fallback, editar, pausar/ativar."""
 import logging
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from database import atualizar_empresa

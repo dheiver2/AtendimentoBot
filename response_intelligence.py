@@ -1,5 +1,6 @@
 """Camada de decisão para escolher a estratégia de resposta do atendimento."""
 import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
@@ -77,15 +78,25 @@ def normalizar_texto(texto: str) -> str:
     return " ".join(texto.lower().strip().split())
 
 
-def buscar_resposta_faq(pergunta: str, faqs: list[dict]) -> str | None:
+def _obter_campo_faq(faq: Mapping[str, object], campo: str) -> str:
+    """Extrai um campo textual da FAQ com fallback seguro para string vazia."""
+    valor = faq.get(campo)
+    return valor if isinstance(valor, str) else ""
+
+
+def buscar_resposta_faq(pergunta: str, faqs: Sequence[Mapping[str, object]]) -> str | None:
     """Busca a resposta mais provável entre FAQs cadastradas."""
     pergunta_normalizada = normalizar_texto(pergunta)
-    melhor_resposta = None
+    melhor_resposta: str | None = None
     melhor_score = 0.0
 
     for faq in faqs:
-        pergunta_faq = normalizar_texto(faq["pergunta"])
+        pergunta_faq = normalizar_texto(_obter_campo_faq(faq, "pergunta"))
         if not pergunta_faq:
+            continue
+
+        resposta_faq = _obter_campo_faq(faq, "resposta")
+        if not resposta_faq:
             continue
 
         if (
@@ -93,12 +104,12 @@ def buscar_resposta_faq(pergunta: str, faqs: list[dict]) -> str | None:
             or pergunta_normalizada in pergunta_faq
             or pergunta_faq in pergunta_normalizada
         ):
-            return faq["resposta"]
+            return resposta_faq
 
         score = SequenceMatcher(None, pergunta_normalizada, pergunta_faq).ratio()
         if score > melhor_score:
             melhor_score = score
-            melhor_resposta = faq["resposta"]
+            melhor_resposta = resposta_faq
 
     if melhor_score >= 0.82:
         return melhor_resposta

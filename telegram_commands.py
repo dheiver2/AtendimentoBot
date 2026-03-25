@@ -10,7 +10,6 @@ from telegram import (
     MenuButtonCommands,
 )
 
-
 PerfilComando = Literal["admin", "cliente", "padrao"]
 
 

@@ -1,9 +1,6 @@
 """Testes para vector_store.py — operações com FAISS."""
-import os
-import shutil
-import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import vector_store as vs
 

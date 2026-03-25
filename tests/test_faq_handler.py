@@ -1,9 +1,10 @@
 """Testes para handlers/faq.py — gestão de perguntas frequentes."""
 import unittest
 from unittest.mock import AsyncMock, patch
+
 from telegram.ext import ConversationHandler
 
-from tests.helpers import make_update, make_context, make_empresa
+from tests.helpers import make_context, make_empresa, make_update
 
 
 class RotuloFaqTests(unittest.TestCase):
@@ -47,7 +48,7 @@ class CmdFaqTests(unittest.IsolatedAsyncioTestCase):
         update = make_update()
         ctx = make_context(args=["adicionar"])
         ctx.args = ["adicionar"]
-        result = await cmd_faq(update, ctx)
+        await cmd_faq(update, ctx)
         mock_iniciar.assert_called_once()
 
     @patch("handlers.faq._obter_empresa_admin_ou_responder")
@@ -90,8 +91,8 @@ class IniciarCadastroFaqTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.faq._obter_empresa_admin_ou_responder")
     @patch("handlers.faq.listar_faqs", new_callable=AsyncMock, return_value=[])
     async def test_inicia_fluxo(self, mock_faqs, mock_admin):
-        from handlers.faq import _iniciar_cadastro_faq
         from handlers.common import AGUARDANDO_FAQ_PERGUNTA
+        from handlers.faq import _iniciar_cadastro_faq
 
         mock_admin.return_value = make_empresa()
         update = make_update()
@@ -133,8 +134,8 @@ class ReceberFaqPerguntaTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.faq.verificar_rate_limit", return_value=None)
     async def test_pergunta_valida(self, mock_rate):
-        from handlers.faq import receber_faq_pergunta
         from handlers.common import AGUARDANDO_FAQ_RESPOSTA
+        from handlers.faq import receber_faq_pergunta
 
         update = make_update("Qual o prazo de entrega?")
         ctx = make_context(user_data={"empresa_faq_id": 1})

@@ -1,10 +1,11 @@
-import os
 import logging
+import os
 from dataclasses import dataclass
 from time import perf_counter
 
-from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
 from metrics import registrar_metrica_rag
 from vector_store import buscar_contexto
 
@@ -153,6 +154,36 @@ def _salvar_resposta_cache(empresa_id: int, pergunta: str, resposta: str, agora:
     )
 
 
+def _extrair_texto_resposta(resposta: object) -> str:
+    """Converte a saída do LangChain para texto simples, mesmo em formatos estruturados."""
+    conteudo = getattr(resposta, "content", resposta)
+
+    if isinstance(conteudo, str):
+        return conteudo
+
+    if isinstance(conteudo, list):
+        partes: list[str] = []
+        for item in conteudo:
+            if isinstance(item, str) and item.strip():
+                partes.append(item.strip())
+                continue
+
+            if isinstance(item, dict):
+                texto = item.get("text")
+                if isinstance(texto, str) and texto.strip():
+                    partes.append(texto.strip())
+
+        texto = "\n".join(partes).strip()
+        if texto:
+            return texto
+
+    texto = str(conteudo).strip()
+    if texto:
+        return texto
+
+    raise ValueError("Resposta do modelo veio sem conteúdo textual utilizável.")
+
+
 async def gerar_resposta(
     empresa_id: int,
     nome_empresa: str,
@@ -201,7 +232,7 @@ async def gerar_resposta(
     }
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)))
 
-    extra_body = {}
+    extra_body: dict[str, object] = {}
     if usar_fallback and len(modelos) > 1:
         extra_body = {
             "models": modelos,
@@ -231,6 +262,7 @@ async def gerar_resposta(
             "instrucoes_resposta": instrucoes_resposta,
             "pergunta": pergunta,
         })
+        texto_resposta = _extrair_texto_resposta(resposta)
     except Exception:
         registrar_metrica_rag(
             empresa_id,
@@ -251,7 +283,7 @@ async def gerar_resposta(
         )
         raise
     tempo_llm = perf_counter() - inicio_llm
-    _salvar_resposta_cache(empresa_id, pergunta, resposta.content, perf_counter())
+    _salvar_resposta_cache(empresa_id, pergunta, texto_resposta, perf_counter())
     registrar_metrica_rag(
         empresa_id,
         perf_counter() - inicio,
@@ -271,4 +303,4 @@ async def gerar_resposta(
         timeout,
     )
 
-    return resposta.content
+    return texto_resposta

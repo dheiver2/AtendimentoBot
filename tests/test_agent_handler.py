@@ -1,8 +1,8 @@
 """Testes para handlers/agent.py — interação com o agente RAG."""
 import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
-from tests.helpers import make_update, make_context, make_empresa
+from tests.helpers import make_context, make_empresa, make_update
 
 
 class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
