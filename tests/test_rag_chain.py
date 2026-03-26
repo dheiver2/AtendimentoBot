@@ -11,6 +11,7 @@ class RagChainTests(unittest.TestCase):
 
     def test_template_considera_regras_operacionais(self):
         self.assertIn("regras operacionais", rag_chain.TEMPLATE.lower())
+        self.assertIn("histórico recente", rag_chain.TEMPLATE.lower())
         self.assertNotIn("APENAS com base no contexto", rag_chain.TEMPLATE)
 
     def test_classifica_pergunta_curta(self):
@@ -73,38 +74,68 @@ class GerarRespostaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sem_chunks_retorna_mensagem_padrao(self):
         with patch("rag_chain.buscar_contexto", return_value=[]):
-            resposta = await rag_chain.gerar_resposta(
-                empresa_id=1,
-                nome_empresa="Acme",
-                nome_bot="Ana",
-                instrucoes="Seja objetiva",
-                pergunta="Qual o prazo?",
-            )
+            with patch("rag_chain.obter_assinatura_contexto", return_value="missing"):
+                resposta = await rag_chain.gerar_resposta(
+                    empresa_id=1,
+                    nome_empresa="Acme",
+                    nome_bot="Ana",
+                    instrucoes="Seja objetiva",
+                    pergunta="Qual o prazo?",
+                )
 
         self.assertIn("ainda não tenho documentos", resposta)
+
+    async def test_consulta_recuperacao_inclui_historico_quando_pergunta_contextual(self):
+        chain = _FakeChain(response=SimpleNamespace(content="Resposta com contexto"))
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}, clear=True):
+            with patch("rag_chain.obter_assinatura_contexto", return_value="store:v1"):
+                with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]) as mock_busca:
+                    with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
+                        with patch("rag_chain.ChatOpenAI", return_value=MagicMock()):
+                            resposta = await rag_chain.gerar_resposta(
+                                empresa_id=11,
+                                nome_empresa="Acme",
+                                nome_bot="Ana",
+                                instrucoes="Seja objetiva",
+                                pergunta="E no premium?",
+                                historico=[
+                                    {
+                                        "mensagem_usuario": "Quais planos vocês têm?",
+                                        "resposta_bot": "Temos Básico e Premium. Quer que eu detalhe o Premium?",
+                                    }
+                                ],
+                            )
+
+        self.assertEqual(resposta, "Resposta com contexto")
+        consulta = mock_busca.call_args.args[1]
+        self.assertIn("premium", consulta.lower())
+        self.assertIn("quais planos", consulta.lower())
+        self.assertIn("cliente:", chain.calls[0]["historico"].lower())
 
     async def test_normaliza_resposta_estruturada_e_reaproveita_cache(self):
         chain = _FakeChain(response=SimpleNamespace(content=[{"text": "Primeira linha"}, "Segunda linha"]))
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}, clear=True):
-            with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]):
-                with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
-                    with patch("rag_chain.ChatOpenAI", return_value=MagicMock()):
-                        with patch("rag_chain.registrar_metrica_rag") as mock_metricas:
-                            resposta_1 = await rag_chain.gerar_resposta(
-                                empresa_id=7,
-                                nome_empresa="Acme",
-                                nome_bot="Ana",
-                                instrucoes="Seja objetiva",
-                                pergunta="Explique a política de troca",
-                            )
-                            resposta_2 = await rag_chain.gerar_resposta(
-                                empresa_id=7,
-                                nome_empresa="Acme",
-                                nome_bot="Ana",
-                                instrucoes="Seja objetiva",
-                                pergunta="Explique a política de troca",
-                            )
+            with patch("rag_chain.obter_assinatura_contexto", return_value="store:v1"):
+                with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]):
+                    with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
+                        with patch("rag_chain.ChatOpenAI", return_value=MagicMock()):
+                            with patch("rag_chain.registrar_metrica_rag") as mock_metricas:
+                                resposta_1 = await rag_chain.gerar_resposta(
+                                    empresa_id=7,
+                                    nome_empresa="Acme",
+                                    nome_bot="Ana",
+                                    instrucoes="Seja objetiva",
+                                    pergunta="Explique a política de troca",
+                                )
+                                resposta_2 = await rag_chain.gerar_resposta(
+                                    empresa_id=7,
+                                    nome_empresa="Acme",
+                                    nome_bot="Ana",
+                                    instrucoes="Seja objetiva",
+                                    pergunta="Explique a política de troca",
+                                )
 
         self.assertEqual(resposta_1, "Primeira linha\nSegunda linha")
         self.assertEqual(resposta_2, resposta_1)
@@ -112,21 +143,78 @@ class GerarRespostaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_metricas.call_count, 2)
         self.assertTrue(mock_metricas.call_args.kwargs["cache_hit"])
 
+    async def test_cache_nao_reaproveita_quando_historico_muda(self):
+        chain = _FakeChain(response=SimpleNamespace(content="Resposta"))
+
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}, clear=True):
+            with patch("rag_chain.obter_assinatura_contexto", return_value="store:v1"):
+                with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]):
+                    with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
+                        with patch("rag_chain.ChatOpenAI", return_value=MagicMock()):
+                            await rag_chain.gerar_resposta(
+                                empresa_id=7,
+                                nome_empresa="Acme",
+                                nome_bot="Ana",
+                                instrucoes="Seja objetiva",
+                                pergunta="E no premium?",
+                                historico=[{"mensagem_usuario": "Planos", "resposta_bot": "Temos Básico."}],
+                            )
+                            resposta = await rag_chain.gerar_resposta(
+                                empresa_id=7,
+                                nome_empresa="Acme",
+                                nome_bot="Ana",
+                                instrucoes="Seja objetiva",
+                                pergunta="E no premium?",
+                                historico=[{"mensagem_usuario": "Planos", "resposta_bot": "Temos Premium."}],
+                            )
+
+        self.assertEqual(resposta, "Resposta")
+        self.assertEqual(len(chain.calls), 2)
+
+    async def test_fallback_automatico_quando_ha_varios_modelos(self):
+        chain = _FakeChain(response=SimpleNamespace(content="Resposta"))
+
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENROUTER_API_KEY": "test-key",
+                "OPENROUTER_MODELS": "modelo-a,modelo-b",
+            },
+            clear=True,
+        ):
+            with patch("rag_chain.obter_assinatura_contexto", return_value="store:v1"):
+                with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]):
+                    with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
+                        with patch("rag_chain.ChatOpenAI", return_value=MagicMock()) as mock_chat:
+                            await rag_chain.gerar_resposta(
+                                empresa_id=5,
+                                nome_empresa="Acme",
+                                nome_bot="Ana",
+                                instrucoes="Seja objetiva",
+                                pergunta="Qual o prazo?",
+                            )
+
+        self.assertEqual(
+            mock_chat.call_args.kwargs["extra_body"],
+            {"models": ["modelo-a", "modelo-b"], "route": "fallback"},
+        )
+
     async def test_erro_do_modelo_registra_falha(self):
         chain = _FakeChain(error=RuntimeError("boom"))
 
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}, clear=True):
-            with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]):
-                with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
-                    with patch("rag_chain.ChatOpenAI", return_value=MagicMock()):
-                        with patch("rag_chain.registrar_metrica_rag") as mock_metricas:
-                            with self.assertRaises(RuntimeError):
-                                await rag_chain.gerar_resposta(
-                                    empresa_id=9,
-                                    nome_empresa="Acme",
-                                    nome_bot="Ana",
-                                    instrucoes="Seja objetiva",
-                                    pergunta="Explique a política de troca",
-                                )
+            with patch("rag_chain.obter_assinatura_contexto", return_value="store:v1"):
+                with patch("rag_chain.buscar_contexto", return_value=["Trecho relevante"]):
+                    with patch("rag_chain.ChatPromptTemplate.from_template", return_value=_FakePrompt(chain)):
+                        with patch("rag_chain.ChatOpenAI", return_value=MagicMock()):
+                            with patch("rag_chain.registrar_metrica_rag") as mock_metricas:
+                                with self.assertRaises(RuntimeError):
+                                    await rag_chain.gerar_resposta(
+                                        empresa_id=9,
+                                        nome_empresa="Acme",
+                                        nome_bot="Ana",
+                                        instrucoes="Seja objetiva",
+                                        pergunta="Explique a política de troca",
+                                    )
 
         self.assertFalse(mock_metricas.call_args.kwargs["sucesso"])

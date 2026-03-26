@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Awaitable, Callable
 
-from database import listar_faqs, registrar_conversa
+from database import listar_conversas_recentes, listar_faqs, registrar_conversa
 from metrics import registrar_metrica_atendimento
 from rag_chain import gerar_resposta
 from rate_limiter import limiter_mensagens, verificar_rate_limit
@@ -27,11 +27,12 @@ logger = logging.getLogger(__name__)
 _FAQ_CACHE_TTL_SECONDS = 30
 
 FaqLoader = Callable[[int], Awaitable[list[dict]]]
+ConversationLoader = Callable[[int, int, int], Awaitable[list[dict]]]
 ConversaRegistrar = Callable[[int, int, str, str], Awaitable[object]]
 RateLimitChecker = Callable[[object, int], str | None]
 MessageValidator = Callable[[str], str]
 DocumentChecker = Callable[[int], bool]
-RagResponder = Callable[[int, str, str, str, str], Awaitable[str]]
+RagResponder = Callable[..., Awaitable[str]]
 
 
 @dataclass
@@ -177,6 +178,7 @@ async def processar_pergunta(
     usuario_id: int,
     usuario_admin: bool,
     faq_loader: FaqLoader = listar_faqs,
+    conversation_loader: ConversationLoader = listar_conversas_recentes,
     registrar_conversa_fn: ConversaRegistrar = registrar_conversa,
     rate_limit_checker: RateLimitChecker = verificar_rate_limit,
     message_validator: MessageValidator = validar_mensagem_usuario,
@@ -212,6 +214,7 @@ async def processar_pergunta(
 
     faqs = await _obter_faqs_cacheadas(empresa["id"], faq_loader=faq_loader)
     tem_documentos = document_checker(empresa["id"])
+    historico_recente = await conversation_loader(empresa["id"], usuario_id, 6)
     decisao = decidir_resposta(
         pergunta=pergunta,
         empresa=empresa,
@@ -220,6 +223,7 @@ async def processar_pergunta(
         tem_documentos=tem_documentos,
         resposta_pausado=_formatar_resposta_pausado(empresa),
         resposta_sem_base=_formatar_resposta_sem_base(empresa, usuario_admin=usuario_admin),
+        historico_recente=historico_recente,
     )
     logger.info(
         "Inteligencia resposta empresa=%s usuario=%s decisao=%s motivo=%s",
@@ -270,6 +274,7 @@ async def processar_pergunta(
             empresa["nome_bot"],
             _instrucoes_operacionais_empresa(empresa),
             pergunta,
+            historico_recente,
         )
 
         resposta_normalizada = _normalizar_texto(resposta)
@@ -277,6 +282,8 @@ async def processar_pergunta(
             "nao tenho essa informacao" in resposta_normalizada
             or "nao tenho documentos" in resposta_normalizada
             or "nao estiver no contexto" in resposta_normalizada
+            or "nao encontrei informacao suficiente" in resposta_normalizada
+            or "nao tenho essa informacao confirmada" in resposta_normalizada
         ):
             resposta = (
                 f"{resposta}\n\n"

@@ -12,6 +12,11 @@ except ImportError:  # Compatibilidade temporária com ambientes ainda não atua
 
 from config import VECTOR_STORES_DIR
 
+_DEFAULT_SEARCH_FETCH_MULTIPLIER = 4
+_DEFAULT_SEARCH_FETCH_MIN = 8
+_DEFAULT_RELEVANCE_SCORE_THRESHOLD = 0.22
+_NEAR_THRESHOLD_MARGIN = 0.08
+
 
 class VectorStoreIncompatibilityError(RuntimeError):
     """Erro levantado quando o índice FAISS é incompatível com o embedding atual."""
@@ -27,29 +32,54 @@ def _caminho_store(empresa_id: int) -> str:
     return os.path.join(VECTOR_STORES_DIR, str(empresa_id))
 
 
-def _assinatura_store(caminho: str) -> tuple[str, float, float]:
+def _obter_stat_arquivo(caminho: str) -> tuple[float, int]:
+    try:
+        if os.path.exists(caminho):
+            return os.path.getmtime(caminho), os.path.getsize(caminho)
+    except OSError:
+        return 0.0, 0
+    return 0.0, 0
+
+
+def _assinatura_store(caminho: str) -> tuple[str, float, int, float, int]:
     """Cria uma assinatura simples para invalidar cache quando o índice muda em disco."""
     faiss_path = os.path.join(caminho, "index.faiss")
     pkl_path = os.path.join(caminho, "index.pkl")
-
-    try:
-        faiss_mtime = os.path.getmtime(faiss_path) if os.path.exists(faiss_path) else 0.0
-    except OSError:
-        faiss_mtime = 0.0
-
-    try:
-        pkl_mtime = os.path.getmtime(pkl_path) if os.path.exists(pkl_path) else 0.0
-    except OSError:
-        pkl_mtime = 0.0
-
-    return (caminho, faiss_mtime, pkl_mtime)
-
+    faiss_mtime, faiss_size = _obter_stat_arquivo(faiss_path)
+    pkl_mtime, pkl_size = _obter_stat_arquivo(pkl_path)
+    return (caminho, faiss_mtime, faiss_size, pkl_mtime, pkl_size)
 
 @lru_cache(maxsize=32)
-def _carregar_store_cache(assinatura: tuple[str, float, float]) -> FAISS:
+def _carregar_store_cache(assinatura: tuple[str, float, int, float, int]) -> FAISS:
     caminho = assinatura[0]
     embeddings = _get_embeddings()
     return FAISS.load_local(caminho, embeddings, allow_dangerous_deserialization=True)
+
+
+def _obter_relevance_score_threshold() -> float:
+    raw_value = (os.getenv("VECTOR_SEARCH_SCORE_THRESHOLD") or "").strip()
+    if not raw_value:
+        return _DEFAULT_RELEVANCE_SCORE_THRESHOLD
+
+    try:
+        threshold = float(raw_value)
+    except ValueError:
+        return _DEFAULT_RELEVANCE_SCORE_THRESHOLD
+
+    return max(0.0, min(threshold, 1.0))
+
+
+def obter_assinatura_contexto(empresa_id: int) -> str:
+    """Expõe uma assinatura estável da base para cache de respostas."""
+    caminho = _caminho_store(empresa_id)
+    if not os.path.exists(caminho):
+        return "missing"
+
+    _, faiss_mtime, faiss_size, pkl_mtime, pkl_size = _assinatura_store(caminho)
+    return (
+        f"faiss:{faiss_mtime:.6f}:{faiss_size}"
+        f"|pkl:{pkl_mtime:.6f}:{pkl_size}"
+    )
 
 
 def adicionar_documentos(
@@ -112,15 +142,42 @@ def buscar_contexto(empresa_id: int, pergunta: str, k: int = 4) -> list[str]:
         return []
 
     store = _carregar_store_cache(_assinatura_store(caminho))
+    fetch_k = max(k * _DEFAULT_SEARCH_FETCH_MULTIPLIER, _DEFAULT_SEARCH_FETCH_MIN)
+    score_threshold = _obter_relevance_score_threshold()
 
     try:
-        docs = store.similarity_search(pergunta, k=k)
+        docs_com_score = store.similarity_search_with_relevance_scores(
+            pergunta,
+            k=max(k, 1),
+            fetch_k=fetch_k,
+            score_threshold=score_threshold,
+        )
+        if not docs_com_score and score_threshold > 0.0:
+            candidatos = store.similarity_search_with_relevance_scores(
+                pergunta,
+                k=max(k, 1),
+                fetch_k=fetch_k,
+            )
+            if candidatos and candidatos[0][1] >= max(score_threshold - _NEAR_THRESHOLD_MARGIN, 0.0):
+                docs_com_score = [candidatos[0]]
     except (AssertionError, ValueError, RuntimeError) as exc:
         raise VectorStoreIncompatibilityError(
             "A base vetorial desta empresa ficou incompatível com o embedding atual. "
             "Reindexe a base em /documentos > Reindexar Base para corrigir."
         ) from exc
-    return [doc.page_content for doc in docs]
+
+    resultados: list[str] = []
+    vistos: set[str] = set()
+    for doc, _score in docs_com_score:
+        conteudo = doc.page_content.strip()
+        if not conteudo or conteudo in vistos:
+            continue
+        vistos.add(conteudo)
+        resultados.append(conteudo)
+        if len(resultados) >= k:
+            break
+
+    return resultados
 
 
 def empresa_tem_documentos(empresa_id: int) -> bool:

@@ -1,10 +1,15 @@
 import json
 import secrets
+import sqlite3
 from typing import Any
 
 import aiosqlite
 
 from config import DB_PATH
+
+
+def _erro_tabela_inexistente(exc: sqlite3.OperationalError, tabela: str) -> bool:
+    return f"no such table: {tabela}".lower() in str(exc).lower()
 
 
 def _coerce_lastrowid(valor: int | None) -> int:
@@ -266,6 +271,10 @@ async def init_db():
                 criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (empresa_id) REFERENCES empresas(id)
             )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversas_empresa_usuario_id
+            ON conversas(empresa_id, usuario_telegram_id, id DESC)
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS faqs (
@@ -683,6 +692,32 @@ async def registrar_conversa(
         return _coerce_lastrowid(cursor.lastrowid)
 
 
+async def listar_conversas_recentes(
+    empresa_id: int,
+    usuario_telegram_id: int,
+    limite: int = 6,
+) -> list[dict]:
+    """Lista os turnos mais recentes do usuário na empresa, em ordem cronológica."""
+    limite_normalizado = max(1, min(int(limite), 12))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM conversas
+            WHERE empresa_id = ?
+              AND usuario_telegram_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (empresa_id, usuario_telegram_id, limite_normalizado),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    rows.reverse()
+    return rows
+
+
 async def criar_feedback_resposta(
     conversa_id: int,
     empresa_id: int,
@@ -766,67 +801,87 @@ async def salvar_sessao_whatsapp(
 ) -> None:
     """Persiste a sessão conversacional do WhatsApp para sobreviver a reinícios."""
     payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO whatsapp_sessions (
-                sender,
-                state,
-                data_json,
-                identidade_visual_enviada,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(sender) DO UPDATE SET
-                state = excluded.state,
-                data_json = excluded.data_json,
-                identidade_visual_enviada = excluded.identidade_visual_enviada,
-                updated_at = excluded.updated_at
-            """,
-            (sender, state, payload, int(identidade_visual_enviada), updated_at),
-        )
-        await db.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO whatsapp_sessions (
+                    sender,
+                    state,
+                    data_json,
+                    identidade_visual_enviada,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(sender) DO UPDATE SET
+                    state = excluded.state,
+                    data_json = excluded.data_json,
+                    identidade_visual_enviada = excluded.identidade_visual_enviada,
+                    updated_at = excluded.updated_at
+                """,
+                (sender, state, payload, int(identidade_visual_enviada), updated_at),
+            )
+            await db.commit()
+    except sqlite3.OperationalError as exc:
+        if _erro_tabela_inexistente(exc, "whatsapp_sessions"):
+            return
+        raise
 
 
 async def obter_sessao_whatsapp(sender: str) -> dict | None:
     """Carrega uma sessão persistida do WhatsApp."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM whatsapp_sessions WHERE sender = ?",
-            (sender,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return None
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM whatsapp_sessions WHERE sender = ?",
+                (sender,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
 
-        sessao = dict(row)
-        try:
-            sessao["data"] = json.loads(sessao.pop("data_json") or "{}")
-        except json.JSONDecodeError:
-            sessao["data"] = {}
-        return sessao
+            sessao = dict(row)
+            try:
+                sessao["data"] = json.loads(sessao.pop("data_json") or "{}")
+            except json.JSONDecodeError:
+                sessao["data"] = {}
+            return sessao
+    except sqlite3.OperationalError as exc:
+        if _erro_tabela_inexistente(exc, "whatsapp_sessions"):
+            return None
+        raise
 
 
 async def remover_sessao_whatsapp(sender: str) -> bool:
     """Remove uma sessão persistida do WhatsApp."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "DELETE FROM whatsapp_sessions WHERE sender = ?",
-            (sender,),
-        )
-        await db.commit()
-        return bool(cursor.rowcount > 0)
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "DELETE FROM whatsapp_sessions WHERE sender = ?",
+                (sender,),
+            )
+            await db.commit()
+            return bool(cursor.rowcount > 0)
+    except sqlite3.OperationalError as exc:
+        if _erro_tabela_inexistente(exc, "whatsapp_sessions"):
+            return False
+        raise
 
 
 async def limpar_sessoes_whatsapp_expiradas(updated_before: float) -> int:
     """Limpa sessões persistidas que já passaram do TTL configurado."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "DELETE FROM whatsapp_sessions WHERE updated_at < ?",
-            (updated_before,),
-        )
-        await db.commit()
-        return int(cursor.rowcount)
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "DELETE FROM whatsapp_sessions WHERE updated_at < ?",
+                (updated_before,),
+            )
+            await db.commit()
+            return int(cursor.rowcount)
+    except sqlite3.OperationalError as exc:
+        if _erro_tabela_inexistente(exc, "whatsapp_sessions"):
+            return 0
+        raise
 
 
 async def registrar_metrica_atendimento_db(

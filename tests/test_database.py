@@ -257,6 +257,19 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(feedback["canal"], "telegram")
         self.assertEqual(feedback["avaliacao"], 1)
 
+    async def test_lista_conversas_recentes_filtra_usuario_e_ordena_cronologicamente(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+
+        await database.registrar_conversa(empresa_id, 999, "Pergunta 1", "Resposta 1")
+        await database.registrar_conversa(empresa_id, 999, "Pergunta 2", "Resposta 2")
+        await database.registrar_conversa(empresa_id, 777, "Outra pessoa", "Outra resposta")
+        await database.registrar_conversa(empresa_id, 999, "Pergunta 3", "Resposta 3")
+
+        conversas = await database.listar_conversas_recentes(empresa_id, 999, limite=2)
+
+        self.assertEqual([item["mensagem_usuario"] for item in conversas], ["Pergunta 2", "Pergunta 3"])
+        self.assertEqual([item["resposta_bot"] for item in conversas], ["Resposta 2", "Resposta 3"])
+
     async def test_persistencia_de_sessao_whatsapp(self):
         await database.salvar_sessao_whatsapp(
             "5511999999999@c.us",

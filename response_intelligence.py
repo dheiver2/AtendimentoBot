@@ -64,6 +64,70 @@ _PERGUNTAS_BAIXA_INFORMACAO = {
     "info",
 }
 
+_CONTINUATION_PHRASES = {
+    "sim",
+    "nao",
+    "não",
+    "quero",
+    "quero sim",
+    "pode ser",
+    "isso",
+    "esse",
+    "essa",
+    "esses",
+    "essas",
+    "outro",
+    "outra",
+    "o premium",
+    "no premium",
+    "o basico",
+    "o básico",
+    "no basico",
+    "no básico",
+}
+
+_CONTINUATION_START_TOKENS = {
+    "e",
+    "mas",
+    "esse",
+    "essa",
+    "esses",
+    "essas",
+    "isso",
+    "ele",
+    "ela",
+    "eles",
+    "elas",
+    "nele",
+    "nela",
+    "sim",
+    "nao",
+    "não",
+    "quero",
+    "tambem",
+    "também",
+    "entao",
+    "então",
+}
+
+_CONTINUATION_REFERENCE_TOKENS = {
+    "esse",
+    "essa",
+    "esses",
+    "essas",
+    "isso",
+    "ele",
+    "ela",
+    "eles",
+    "elas",
+    "premium",
+    "basico",
+    "básico",
+    "plano",
+    "opcao",
+    "opção",
+}
+
 _HUMAN_REQUEST_FRAGMENTS = (
     "falar com atendente",
     "falar com humano",
@@ -127,9 +191,9 @@ def normalizar_texto(texto: str) -> str:
     return " ".join(texto.lower().strip().split())
 
 
-def _obter_campo_faq(faq: Mapping[str, object], campo: str) -> str:
-    """Extrai um campo textual da FAQ com fallback seguro para string vazia."""
-    valor = faq.get(campo)
+def _obter_campo_textual(item: Mapping[str, object], campo: str) -> str:
+    """Extrai um campo textual com fallback seguro para string vazia."""
+    valor = item.get(campo)
     return valor if isinstance(valor, str) else ""
 
 
@@ -140,11 +204,11 @@ def buscar_resposta_faq(pergunta: str, faqs: Sequence[Mapping[str, object]]) -> 
     melhor_score = 0.0
 
     for faq in faqs:
-        pergunta_faq = normalizar_texto(_obter_campo_faq(faq, "pergunta"))
+        pergunta_faq = normalizar_texto(_obter_campo_textual(faq, "pergunta"))
         if not pergunta_faq:
             continue
 
-        resposta_faq = _obter_campo_faq(faq, "resposta")
+        resposta_faq = _obter_campo_textual(faq, "resposta")
         if not resposta_faq:
             continue
 
@@ -221,6 +285,58 @@ def detectar_pergunta_horario(pergunta: str) -> bool:
         return True
 
     return any(pattern.search(pergunta_normalizada) for pattern in _HOURS_REQUEST_PATTERNS)
+
+
+def detectar_continuacao_contextual(
+    pergunta: str,
+    historico_recente: Sequence[Mapping[str, object]] | None,
+) -> bool:
+    """Detecta perguntas curtas que dependem do turno anterior para fazer sentido."""
+    if not historico_recente:
+        return False
+
+    pergunta_normalizada = normalizar_texto(pergunta)
+    if not pergunta_normalizada:
+        return False
+
+    palavras = [palavra.strip("?!.,:;") for palavra in pergunta_normalizada.split() if palavra]
+    if not palavras or len(palavras) > 6:
+        return False
+
+    ultimo_turno = historico_recente[-1]
+    ultima_resposta = _obter_campo_textual(ultimo_turno, "resposta_bot")
+    ultima_resposta_normalizada = normalizar_texto(ultima_resposta)
+
+    if pergunta_normalizada in _CONTINUATION_PHRASES:
+        return True
+
+    if palavras[0] in _CONTINUATION_START_TOKENS:
+        return True
+
+    if len(palavras) <= 4 and any(token in palavras for token in _CONTINUATION_REFERENCE_TOKENS):
+        return True
+
+    if (
+        len(palavras) <= 4
+        and ultima_resposta
+        and (
+            "?" in ultima_resposta
+            or any(
+                gatilho in ultima_resposta_normalizada
+                for gatilho in (
+                    "qual",
+                    "quais",
+                    "quer",
+                    "prefere",
+                    "me informe",
+                    "me diga",
+                )
+            )
+        )
+    ):
+        return True
+
+    return False
 
 
 def deve_usar_rag(pergunta: str) -> bool:
@@ -307,6 +423,7 @@ def decidir_resposta(
     tem_documentos: bool,
     resposta_pausado: str,
     resposta_sem_base: str,
+    historico_recente: Sequence[Mapping[str, object]] | None = None,
 ) -> ResponseDecision:
     """Classifica a mensagem e escolhe a estratégia de resposta."""
     if not bool(empresa.get("ativo", 1)):
@@ -347,6 +464,15 @@ def decidir_resposta(
         return ResponseDecision("trivial", answer=resposta_trivial(empresa, pergunta), reason="smalltalk")
 
     if not deve_usar_rag(pergunta):
+        if detectar_continuacao_contextual(pergunta, historico_recente):
+            if not tem_documentos:
+                return ResponseDecision(
+                    "no_documents",
+                    answer=resposta_sem_base,
+                    reason="knowledge_base_missing_admin" if usuario_admin else "knowledge_base_missing_client",
+                )
+            return ResponseDecision("rag", reason="contextual_followup")
+
         resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
         if empresa.get("fallback_contato"):
             resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"

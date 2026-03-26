@@ -20,6 +20,10 @@ class EmpresaTemDocumentosTests(unittest.TestCase):
         with patch("vector_store.os.path.exists", return_value=True):
             self.assertTrue(vs.empresa_tem_documentos(1))
 
+    def test_obter_assinatura_contexto_retorna_missing_sem_store(self):
+        with patch("vector_store.os.path.exists", return_value=False):
+            self.assertEqual(vs.obter_assinatura_contexto(999), "missing")
+
 
 class AdicionarDocumentosTests(unittest.TestCase):
     @patch("vector_store._get_embeddings")
@@ -99,10 +103,31 @@ class BuscarContextoTests(unittest.TestCase):
         mock_emb.return_value = mock_embeddings
         mock_store = MagicMock()
         mock_store.index.d = 2
-        mock_store.similarity_search.return_value = [mock_doc1, mock_doc2]
+        mock_store.similarity_search_with_relevance_scores.return_value = [
+            (mock_doc1, 0.92),
+            (mock_doc2, 0.84),
+        ]
         mock_faiss.load_local.return_value = mock_store
         resultado = vs.buscar_contexto(1, "pergunta")
         self.assertEqual(resultado, ["Resposta 1", "Resposta 2"])
+
+    @patch("vector_store._get_embeddings")
+    @patch("vector_store.os.path.exists", return_value=True)
+    @patch("vector_store.FAISS")
+    def test_usa_melhor_resultado_quando_filtro_inicial_zera_tudo(self, mock_faiss, mock_exists, mock_emb):
+        mock_doc = MagicMock()
+        mock_doc.page_content = "Resposta quase relevante"
+        mock_store = MagicMock()
+        mock_store.similarity_search_with_relevance_scores.side_effect = [
+            [],
+            [(mock_doc, 0.19)],
+        ]
+        mock_faiss.load_local.return_value = mock_store
+
+        resultado = vs.buscar_contexto(1, "pergunta")
+
+        self.assertEqual(resultado, ["Resposta quase relevante"])
+        self.assertEqual(mock_store.similarity_search_with_relevance_scores.call_count, 2)
 
     @patch("vector_store._get_embeddings")
     @patch("vector_store.os.path.exists", return_value=True)
@@ -112,7 +137,7 @@ class BuscarContextoTests(unittest.TestCase):
         mock_emb.return_value = mock_embeddings
 
         mock_store = MagicMock()
-        mock_store.similarity_search.side_effect = AssertionError("dimensao invalida")
+        mock_store.similarity_search_with_relevance_scores.side_effect = AssertionError("dimensao invalida")
         mock_faiss.load_local.return_value = mock_store
 
         with self.assertRaises(vs.VectorStoreIncompatibilityError) as ctx:

@@ -190,6 +190,32 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Seg a Sex", decisao.answer)
         self.assertIn("suporte@test.com", decisao.answer)
 
+    def test_decidir_resposta_usa_rag_para_continuacao_contextual(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "sim",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+            historico_recente=[
+                {
+                    "mensagem_usuario": "Quais planos vocês têm?",
+                    "resposta_bot": "Temos os planos Básico e Premium. Quer que eu detalhe o Premium?",
+                }
+            ],
+        )
+
+        self.assertEqual(decisao.kind, "rag")
+        self.assertEqual(decisao.reason, "contextual_followup")
+
     def test_formatar_resposta_pausado(self):
         empresa = {
             "horario_atendimento": "Seg a Sex",
