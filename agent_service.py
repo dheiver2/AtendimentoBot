@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Awaitable, Callable
@@ -25,6 +26,35 @@ from vector_store import VectorStoreIncompatibilityError, empresa_tem_documentos
 
 logger = logging.getLogger(__name__)
 _FAQ_CACHE_TTL_SECONDS = 30
+_FEEDBACK_DECISIONS = frozenset({"faq", "rag"})
+_RETAIN_PENDING_FEEDBACK_DECISIONS = frozenset({"trivial"})
+_FEEDBACK_NON_FINAL_FRAGMENTS = (
+    "quais duvidas voce tem sobre a empresa",
+    "sobre o que voce quer saber mais",
+    "posso ajudar melhor se voce mandar uma pergunta mais especifica",
+    "nao recebi sua mensagem",
+    "nao tenho essa informacao",
+    "nao tenho essa informacao confirmada",
+    "nao tenho documentos",
+    "o atendimento ainda esta sendo preparado",
+    "este atendimento ainda nao tem base de conhecimento carregada",
+    "para atendimento humano",
+    "se preferir atendimento humano",
+    "se preferir, fale com a equipe em",
+    "a consulta demorou mais do que o esperado",
+    "ocorreu um erro ao processar sua pergunta",
+    "reformule a pergunta",
+)
+_ENCERRAMENTO_FEEDBACK_PATTERNS = (
+    re.compile(r"^(?:muito\s+)?obrigad[oa](?:\s+mesmo)?$"),
+    re.compile(r"^valeu(?:\s+mesmo)?$"),
+    re.compile(r"^agradeco(?:\s+demais)?$"),
+    re.compile(r"^(?:era|e|eh)\s+isso(?:\s+mesmo)?$"),
+    re.compile(r"^so\s+isso(?:\s+mesmo)?$"),
+    re.compile(r"^resolvido(?:\s+obrigad[oa])?$"),
+    re.compile(r"^tudo\s+certo$"),
+    re.compile(r"^fechado$"),
+)
 
 FaqLoader = Callable[[int], Awaitable[list[dict]]]
 ConversationLoader = Callable[[int, int, int], Awaitable[list[dict]]]
@@ -49,6 +79,46 @@ class AgentResponse:
 
 
 _faq_cache: dict[int, _FaqCacheEntry] = {}
+
+
+def deve_coletar_feedback_no_encerramento(decision: str, resposta: str) -> bool:
+    """Indica se a resposta merece pedido de feedback apenas no encerramento."""
+    decision_normalizada = (decision or "").strip().lower()
+    if decision_normalizada not in _FEEDBACK_DECISIONS:
+        return False
+
+    resposta_normalizada = _normalizar_texto_inteligencia(resposta)
+    if not resposta_normalizada or "?" in (resposta or ""):
+        return False
+
+    return not any(
+        fragmento in resposta_normalizada
+        for fragmento in _FEEDBACK_NON_FINAL_FRAGMENTS
+    )
+
+
+def deve_manter_feedback_pendente(decision: str) -> bool:
+    """Mantém feedback pendente durante pequenas interações sociais."""
+    return (decision or "").strip().lower() in _RETAIN_PENDING_FEEDBACK_DECISIONS
+
+
+def mensagem_indica_encerramento(mensagem: str) -> bool:
+    """Detecta quando o usuário sinaliza que a demanda foi encerrada."""
+    mensagem_normalizada = _normalizar_texto_inteligencia(mensagem).strip("!?.;, ")
+    if not mensagem_normalizada:
+        return False
+
+    if any(
+        pattern.fullmatch(mensagem_normalizada)
+        for pattern in _ENCERRAMENTO_FEEDBACK_PATTERNS
+    ):
+        return True
+
+    agradecimentos = ("obrigado", "obrigada", "valeu", "agradeco")
+    encerramentos = ("era isso", "e isso", "so isso", "resolvido", "tudo certo")
+    return any(token in mensagem_normalizada for token in agradecimentos) and any(
+        token in mensagem_normalizada for token in encerramentos
+    )
 
 
 def _log_task_exception(task: asyncio.Task) -> None:

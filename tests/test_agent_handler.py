@@ -319,7 +319,7 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.agent.validar_mensagem_usuario", return_value="preço do produto?")
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.criar_feedback_resposta", new_callable=AsyncMock, return_value=55)
-    async def test_resposta_com_contexto_expoe_botoes_de_feedback(
+    async def test_resposta_com_contexto_guarda_feedback_pendente_sem_botoes(
         self,
         mock_feedback,
         mock_emp,
@@ -335,7 +335,7 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "handlers.agent.processar_pergunta",
             new_callable=AsyncMock,
-            return_value=SimpleNamespace(text="O produto custa R$50", conversation_id=99),
+            return_value=SimpleNamespace(text="O produto custa R$50", conversation_id=99, decision="rag"),
         ):
             await interagir_com_agente(update, ctx)
 
@@ -346,8 +346,34 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
             canal="telegram",
             resposta_bot="O produto custa R$50",
         )
+        self.assertEqual(ctx.user_data["pending_feedback_id"], 55)
         kwargs = update.message.reply_text.call_args.kwargs
-        self.assertIsNotNone(kwargs["reply_markup"])
+        self.assertIsNone(kwargs.get("reply_markup"))
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="obrigado")
+    @patch("handlers.agent.obter_empresa_do_usuario")
+    async def test_encerramento_expoe_botoes_de_feedback_pendente(
+        self,
+        mock_emp,
+        mock_val,
+        mock_rate,
+    ):
+        from handlers.agent import interagir_com_agente
+
+        mock_emp.return_value = self._empresa()
+        update = make_update("obrigado")
+        ctx = make_context(user_data={"pending_feedback_id": 55})
+
+        with patch("handlers.agent.processar_pergunta", new_callable=AsyncMock) as mock_process:
+            await interagir_com_agente(update, ctx)
+
+        mock_process.assert_not_awaited()
+        self.assertNotIn("pending_feedback_id", ctx.user_data)
+        resposta = update.message.reply_text.call_args[0][0]
+        self.assertIn("Antes de encerrar", resposta)
+        kwargs = update.message.reply_text.call_args.kwargs
+        self.assertIsNotNone(kwargs.get("reply_markup"))
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="pergunta qualquer")

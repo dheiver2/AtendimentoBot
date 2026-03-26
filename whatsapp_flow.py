@@ -12,7 +12,13 @@ from difflib import SequenceMatcher
 from time import time
 from typing import Any, Awaitable, Callable
 
-from agent_service import invalidar_cache_faq, processar_pergunta
+from agent_service import (
+    deve_coletar_feedback_no_encerramento,
+    deve_manter_feedback_pendente,
+    invalidar_cache_faq,
+    mensagem_indica_encerramento,
+    processar_pergunta,
+)
 from bot_profile_photo import (
     empresa_tem_imagem,
     excluir_imagem_empresa,
@@ -97,7 +103,7 @@ _DEFAULT_INSTRUCOES = (
     "Responda de forma educada e profissional."
 )
 _SESSION_TTL_SECONDS = 24 * 60 * 60
-_FEEDBACK_PROMPT = "👍👎 Essa resposta ajudou? Responda com um desses emojis."
+_FEEDBACK_PROMPT = "Antes de encerrar: 👍👎 Essa resposta ajudou? Responda com um desses emojis."
 
 _STATE_ONBOARDING_NOME_EMPRESA = "onboarding_nome_empresa"
 _STATE_ONBOARDING_NOME_BOT = "onboarding_nome_bot"
@@ -262,15 +268,20 @@ def _clear_session(session: WhatsAppSession, *, keep_identity: bool = True) -> N
     session.updated_at = time()
 
 
-def _extrair_resposta_e_conversa_id(resultado: object) -> tuple[str, int | None]:
+def _extrair_resultado_agente(resultado: object) -> tuple[str, int | None, str]:
     if isinstance(resultado, str):
-        return resultado, None
+        return resultado, None, ""
 
     texto = getattr(resultado, "text", None)
     conversa_id = getattr(resultado, "conversation_id", None)
+    decisao = getattr(resultado, "decision", None)
     if isinstance(texto, str):
-        return texto, conversa_id if isinstance(conversa_id, int) else None
-    return str(resultado), None
+        return (
+            texto,
+            conversa_id if isinstance(conversa_id, int) else None,
+            decisao if isinstance(decisao, str) else "",
+        )
+    return str(resultado), None, ""
 
 
 def _feedback_pendente(session: WhatsAppSession) -> int | None:
@@ -2196,20 +2207,25 @@ async def _processar_interacao_agente(
         skip_validation=True,
         return_context=True,
     )
-    resposta, conversa_id = _extrair_resposta_e_conversa_id(resultado)
+    resposta, conversa_id, decisao = _extrair_resultado_agente(resultado)
     if conversa_id is None:
-        _definir_feedback_pendente(session, None)
+        if not deve_manter_feedback_pendente(decisao):
+            _definir_feedback_pendente(session, None)
         return [_make_text_action(resposta)]
 
-    feedback_id = await criar_feedback_resposta(
-        conversa_id,
-        empresa["id"],
-        user_id,
-        canal="whatsapp",
-        resposta_bot=resposta,
-    )
-    _definir_feedback_pendente(session, feedback_id)
-    return [_make_text_action(f"{resposta}\n\n{_FEEDBACK_PROMPT}")]
+    if deve_coletar_feedback_no_encerramento(decisao, resposta):
+        feedback_id = await criar_feedback_resposta(
+            conversa_id,
+            empresa["id"],
+            user_id,
+            canal="whatsapp",
+            resposta_bot=resposta,
+        )
+        _definir_feedback_pendente(session, feedback_id)
+    elif not deve_manter_feedback_pendente(decisao):
+        _definir_feedback_pendente(session, None)
+
+    return [_make_text_action(resposta)]
 
 
 async def _processar_mensagem_whatsapp_inner(
@@ -2385,6 +2401,9 @@ async def _processar_mensagem_whatsapp_inner(
                     else "ℹ️ Esse feedback ja tinha sido registrado."
                 )
             ]
+
+    if session.state is None and _feedback_pendente(session) is not None and mensagem_indica_encerramento(texto):
+        return [_make_text_action(_FEEDBACK_PROMPT)]
 
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = None if empresa_admin else await obter_empresa_do_cliente(user_id)

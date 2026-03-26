@@ -1,6 +1,7 @@
 """Testes do fluxo conversacional do WhatsApp."""
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tests.helpers import make_empresa
@@ -406,6 +407,69 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
         mock_bind.assert_awaited_once_with(1, -5511888888888)
         mock_process.assert_awaited_once()
         self.assertEqual(actions, [{"type": "text", "text": "Resposta automatica"}])
+
+    async def test_whatsapp_resposta_completa_guarda_feedback_sem_prompt(self):
+        from whatsapp_flow import _sessions, processar_mensagem_whatsapp
+
+        sender = "5511888888888@c.us"
+        empresa = make_empresa()
+        with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+            with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=empresa):
+                with patch("whatsapp_flow.obter_empresa_do_usuario", new_callable=AsyncMock, return_value=empresa):
+                    with patch("whatsapp_flow.criar_feedback_resposta", new_callable=AsyncMock, return_value=77) as mock_feedback:
+                        with patch(
+                            "whatsapp_flow.processar_pergunta",
+                            new_callable=AsyncMock,
+                            return_value=SimpleNamespace(
+                                text="O produto custa R$50",
+                                conversation_id=99,
+                                decision="rag",
+                            ),
+                        ):
+                            actions = await processar_mensagem_whatsapp(
+                                sender=sender,
+                                text="Qual o preço?",
+                                message_type="chat",
+                                resolve_default_company=AsyncMock(return_value=None),
+                            )
+
+        mock_feedback.assert_awaited_once_with(
+            99,
+            1,
+            -5511888888888,
+            canal="whatsapp",
+            resposta_bot="O produto custa R$50",
+        )
+        self.assertEqual(actions, [{"type": "text", "text": "O produto custa R$50"}])
+        self.assertEqual(_sessions[sender].data["pending_feedback_id"], 77)
+
+    async def test_whatsapp_encerramento_expoe_prompt_de_feedback_pendente(self):
+        from whatsapp_flow import WhatsAppSession, _sessions, processar_mensagem_whatsapp
+
+        sender = "5511888888888@c.us"
+        _sessions[sender] = WhatsAppSession(data={"pending_feedback_id": 77})
+
+        with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock) as mock_admin:
+            with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock) as mock_cliente:
+                actions = await processar_mensagem_whatsapp(
+                    sender=sender,
+                    text="obrigado",
+                    message_type="chat",
+                    resolve_default_company=AsyncMock(return_value=None),
+                )
+
+        mock_admin.assert_not_awaited()
+        mock_cliente.assert_not_awaited()
+        self.assertEqual(
+            actions,
+            [
+                {
+                    "type": "text",
+                    "text": "Antes de encerrar: 👍👎 Essa resposta ajudou? Responda com um desses emojis.",
+                }
+            ],
+        )
+        self.assertEqual(_sessions[sender].data["pending_feedback_id"], 77)
 
     async def test_cliente_externo_com_varias_empresas_recebe_seletor(self):
         from whatsapp_flow import processar_mensagem_whatsapp

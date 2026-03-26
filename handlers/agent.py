@@ -6,7 +6,10 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from agent_service import (
+    deve_coletar_feedback_no_encerramento,
+    deve_manter_feedback_pendente,
     invalidar_cache_faq,
+    mensagem_indica_encerramento,
     processar_pergunta,
 )
 from database import (
@@ -26,18 +29,25 @@ from .common import _pode_iniciar_admin_telegram_sem_link
 from .onboarding import _mostrar_seletor_empresas
 
 __all__ = ["feedback_resposta_callback", "interagir_com_agente"]
+_PENDING_FEEDBACK_KEY = "pending_feedback_id"
+_FEEDBACK_MESSAGE = "Antes de encerrar, essa resposta ajudou?"
 
 
-def _extrair_resposta_e_conversa_id(resultado: object) -> tuple[str, int | None]:
+def _extrair_resultado_agente(resultado: object) -> tuple[str, int | None, str]:
     """Normaliza o retorno do serviço para suportar contexto rico sem quebrar mocks."""
     if isinstance(resultado, str):
-        return resultado, None
+        return resultado, None, ""
 
     texto = getattr(resultado, "text", None)
     conversa_id = getattr(resultado, "conversation_id", None)
+    decisao = getattr(resultado, "decision", None)
     if isinstance(texto, str):
-        return texto, conversa_id if isinstance(conversa_id, int) else None
-    return str(resultado), None
+        return (
+            texto,
+            conversa_id if isinstance(conversa_id, int) else None,
+            decisao if isinstance(decisao, str) else "",
+        )
+    return str(resultado), None, ""
 
 
 def _teclado_feedback(feedback_id: int) -> InlineKeyboardMarkup:
@@ -47,6 +57,21 @@ def _teclado_feedback(feedback_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("👎", callback_data=f"feedback:down:{feedback_id}"),
         ]]
     )
+
+
+def _feedback_pendente(context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    valor = context.user_data.get(_PENDING_FEEDBACK_KEY)
+    return valor if isinstance(valor, int) else None
+
+
+def _definir_feedback_pendente(
+    context: ContextTypes.DEFAULT_TYPE,
+    feedback_id: int | None,
+) -> None:
+    if feedback_id is None:
+        context.user_data.pop(_PENDING_FEEDBACK_KEY, None)
+        return
+    context.user_data[_PENDING_FEEDBACK_KEY] = feedback_id
 
 
 async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, resposta: str):
@@ -92,6 +117,15 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(mensagem)
         return
 
+    feedback_id_pendente = _feedback_pendente(context)
+    if feedback_id_pendente is not None and mensagem_indica_encerramento(pergunta):
+        _definir_feedback_pendente(context, None)
+        await update.message.reply_text(
+            _FEEDBACK_MESSAGE,
+            reply_markup=_teclado_feedback(feedback_id_pendente),
+        )
+        return
+
     await update.message.chat.send_action("typing")
     resultado = await processar_pergunta(
         empresa=empresa,
@@ -108,9 +142,8 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         skip_validation=True,
         return_context=True,
     )
-    resposta, conversa_id = _extrair_resposta_e_conversa_id(resultado)
-    reply_markup = None
-    if conversa_id is not None:
+    resposta, conversa_id, decisao = _extrair_resultado_agente(resultado)
+    if conversa_id is not None and deve_coletar_feedback_no_encerramento(decisao, resposta):
         feedback_id = await criar_feedback_resposta(
             conversa_id,
             empresa["id"],
@@ -118,8 +151,11 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
             canal="telegram",
             resposta_bot=resposta,
         )
-        reply_markup = _teclado_feedback(feedback_id)
-    await update.message.reply_text(resposta, reply_markup=reply_markup)
+        _definir_feedback_pendente(context, feedback_id)
+    elif not deve_manter_feedback_pendente(decisao):
+        _definir_feedback_pendente(context, None)
+
+    await update.message.reply_text(resposta)
 
 
 async def feedback_resposta_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
