@@ -339,7 +339,7 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
                             )
 
         self.assertEqual(len(actions), 1)
-        self.assertIn("escolha a empresa", actions[0]["text"].lower())
+        self.assertIn("qual empresa deseja atendimento", actions[0]["text"].lower())
 
     async def test_cliente_externo_texto_auto_vincula_empresa_padrao(self):
         from whatsapp_flow import processar_mensagem_whatsapp
@@ -384,9 +384,10 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
                         )
 
         self.assertEqual(len(actions), 1)
-        self.assertIn("escolha a empresa", actions[0]["text"].lower())
+        self.assertIn("qual empresa deseja atendimento", actions[0]["text"].lower())
         self.assertIn("1. Acme", actions[0]["text"])
         self.assertIn("2. Beta", actions[0]["text"])
+        self.assertIn("parte do nome", actions[0]["text"].lower())
 
     async def test_selecao_empresa_vincula_cliente_e_continua_mensagem_pendente(self):
         from whatsapp_flow import processar_mensagem_whatsapp
@@ -439,6 +440,108 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_selecao_empresa_aceita_nome_parcial_em_frase(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        empresas = [
+            make_empresa(empresa_id=1, nome="Acme"),
+            make_empresa(empresa_id=2, nome="Clinica Saude e Vida"),
+        ]
+        resolve_default_company = AsyncMock(return_value=None)
+
+        with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+            with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=None):
+                with patch(
+                    "whatsapp_flow.obter_empresa_do_usuario",
+                    new_callable=AsyncMock,
+                    side_effect=[None, make_empresa(empresa_id=2, nome="Clinica Saude e Vida")],
+                ):
+                    with patch("whatsapp_flow.listar_empresas", new_callable=AsyncMock, return_value=empresas):
+                        await processar_mensagem_whatsapp(
+                            sender="5511888888888@c.us",
+                            text="Quero atendimento",
+                            message_type="chat",
+                            resolve_default_company=resolve_default_company,
+                        )
+
+                    with patch("whatsapp_flow.obter_empresa_por_id", new_callable=AsyncMock, return_value=empresas[1]):
+                        with patch("whatsapp_flow.vincular_cliente_empresa", new_callable=AsyncMock) as mock_bind:
+                            with patch(
+                                "whatsapp_flow._make_welcome_actions",
+                                return_value=[{"type": "text", "text": "bem-vindo clinica"}],
+                            ):
+                                with patch(
+                                    "whatsapp_flow.processar_pergunta",
+                                    new_callable=AsyncMock,
+                                    return_value="Resposta Clinica",
+                                ):
+                                    actions = await processar_mensagem_whatsapp(
+                                        sender="5511888888888@c.us",
+                                        text="quero falar com a clinica saude",
+                                        message_type="chat",
+                                        resolve_default_company=resolve_default_company,
+                                    )
+
+        mock_bind.assert_awaited_once_with(2, -5511888888888)
+        self.assertEqual(
+            actions,
+            [
+                {"type": "text", "text": "bem-vindo clinica"},
+                {"type": "text", "text": "Resposta Clinica"},
+            ],
+        )
+
+    async def test_selecao_empresa_usa_template_como_pista_semantica(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        empresas = [
+            make_empresa(empresa_id=1, nome="Vida Plena", instruction_template_key="clinica"),
+            make_empresa(empresa_id=2, nome="Casa Aurora", instruction_template_key="restaurante"),
+        ]
+        resolve_default_company = AsyncMock(return_value=None)
+
+        with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+            with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=None):
+                with patch(
+                    "whatsapp_flow.obter_empresa_do_usuario",
+                    new_callable=AsyncMock,
+                    side_effect=[None, make_empresa(empresa_id=1, nome="Vida Plena", instruction_template_key="clinica")],
+                ):
+                    with patch("whatsapp_flow.listar_empresas", new_callable=AsyncMock, return_value=empresas):
+                        await processar_mensagem_whatsapp(
+                            sender="5511888888888@c.us",
+                            text="Preciso de atendimento",
+                            message_type="chat",
+                            resolve_default_company=resolve_default_company,
+                        )
+
+                    with patch("whatsapp_flow.obter_empresa_por_id", new_callable=AsyncMock, return_value=empresas[0]):
+                        with patch("whatsapp_flow.vincular_cliente_empresa", new_callable=AsyncMock) as mock_bind:
+                            with patch(
+                                "whatsapp_flow._make_welcome_actions",
+                                return_value=[{"type": "text", "text": "bem-vindo vida plena"}],
+                            ):
+                                with patch(
+                                    "whatsapp_flow.processar_pergunta",
+                                    new_callable=AsyncMock,
+                                    return_value="Resposta Vida Plena",
+                                ):
+                                    actions = await processar_mensagem_whatsapp(
+                                        sender="5511888888888@c.us",
+                                        text="clinica",
+                                        message_type="chat",
+                                        resolve_default_company=resolve_default_company,
+                                    )
+
+        mock_bind.assert_awaited_once_with(1, -5511888888888)
+        self.assertEqual(
+            actions,
+            [
+                {"type": "text", "text": "bem-vindo vida plena"},
+                {"type": "text", "text": "Resposta Vida Plena"},
+            ],
+        )
+
     async def test_cmd_empresas_cliente_vinculado_reabre_seletor(self):
         from whatsapp_flow import processar_mensagem_whatsapp
 
@@ -456,7 +559,7 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(len(actions), 1)
-        self.assertIn("escolha a empresa", actions[0]["text"].lower())
+        self.assertIn("qual empresa deseja atendimento", actions[0]["text"].lower())
 
     async def test_start_externo_sem_token_nao_inicia_onboarding(self):
         from whatsapp_flow import processar_mensagem_whatsapp

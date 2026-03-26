@@ -5,8 +5,10 @@ import base64
 import hashlib
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from time import time
 from typing import Any, Awaitable, Callable
 
@@ -71,6 +73,7 @@ from rate_limiter import (
     limiter_upload,
     verificar_rate_limit,
 )
+from response_intelligence import normalizar_texto as _normalizar_texto_semantico_base
 from validators import (
     MAX_DOCUMENTOS_POR_EMPRESA,
     MAX_FAQS_POR_EMPRESA,
@@ -111,6 +114,59 @@ _STATE_RESET_CONFIRMACAO = "reset_confirmacao"
 _STATE_EDITAR_CAMPO = "editar_campo"
 _STATE_EDITAR_VALOR = "editar_valor"
 _STATE_SELECAO_EMPRESA = "selecao_empresa"
+_SELECAO_EMPRESA_SCORE_MINIMO = 0.82
+_SELECAO_EMPRESA_MARGEM_MINIMA = 0.08
+
+_SELECAO_EMPRESA_STOPWORDS = {
+    "a",
+    "agora",
+    "ajuda",
+    "ajudar",
+    "ao",
+    "aos",
+    "as",
+    "atendimento",
+    "atender",
+    "bot",
+    "chat",
+    "com",
+    "como",
+    "conversar",
+    "da",
+    "das",
+    "de",
+    "deseja",
+    "do",
+    "dos",
+    "e",
+    "empresa",
+    "falar",
+    "favor",
+    "gostaria",
+    "me",
+    "minha",
+    "na",
+    "nas",
+    "no",
+    "nos",
+    "o",
+    "oi",
+    "ola",
+    "opcao",
+    "para",
+    "por",
+    "preciso",
+    "qual",
+    "quero",
+    "responder",
+    "selecionar",
+    "suporte",
+    "uma",
+    "um",
+    "virtual",
+    "voce",
+    "voces",
+}
 
 _FIELD_LABELS = {
     "nome": "nome da empresa",
@@ -403,8 +459,60 @@ def _iniciar_onboarding_admin(
     return [_make_text_action("\n".join(linhas))]
 
 
+def _normalizar_texto_semantico(texto: str) -> str:
+    normalizado = _normalizar_texto_semantico_base(texto or "")
+    normalizado = re.sub(r"[^a-z0-9]+", " ", normalizado)
+    return " ".join(normalizado.split())
+
+
+def _tokens_semanticos_empresa(texto: str) -> set[str]:
+    return {
+        token
+        for token in _normalizar_texto_semantico(texto).split()
+        if token
+        and not token.isdigit()
+        and len(token) > 1
+        and token not in _SELECAO_EMPRESA_STOPWORDS
+    }
+
+
+def _termos_match_empresa(empresa: dict[str, Any]) -> list[str]:
+    termos: list[str] = []
+    vistos: set[str] = set()
+
+    def adicionar(valor: str | None) -> None:
+        termo = str(valor or "").strip()
+        if not termo:
+            return
+        chave = termo.casefold()
+        if chave in vistos:
+            return
+        vistos.add(chave)
+        termos.append(termo)
+
+    adicionar(empresa.get("nome"))
+    adicionar(empresa.get("nome_bot"))
+
+    template_key = str(empresa.get("instruction_template_key") or "").strip()
+    if template_key:
+        adicionar(template_key)
+
+    template = obter_template_instrucao(template_key)
+    if template:
+        adicionar(template.nome)
+
+    return termos
+
+
 def _snapshot_empresas_para_selecao(empresas: list[dict]) -> list[dict[str, Any]]:
-    return [{"id": int(empresa["id"]), "nome": str(empresa["nome"])} for empresa in empresas]
+    return [
+        {
+            "id": int(empresa["id"]),
+            "nome": str(empresa["nome"]),
+            "match_terms": _termos_match_empresa(empresa),
+        }
+        for empresa in empresas
+    ]
 
 
 def _texto_selecao_empresa(
@@ -413,7 +521,9 @@ def _texto_selecao_empresa(
     manter_pendente: bool = False,
 ) -> str:
     linhas = [
-        "🏢 Escolha a empresa com quem deseja falar:",
+        "🏢 Qual empresa deseja atendimento?",
+        "",
+        "Posso entender por numero, nome completo ou parte do nome.",
         "",
     ]
     for indice, empresa in enumerate(empresas, start=1):
@@ -422,7 +532,7 @@ def _texto_selecao_empresa(
     linhas.extend(
         [
             "",
-            "Responda com o numero da empresa desejada.",
+            'Exemplo: "2", "Clinica Saude" ou "quero falar com a academia".',
         ]
     )
     if manter_pendente:
@@ -467,15 +577,107 @@ def _resolver_selecao_empresa(
             if escolha["id"] == indice:
                 return escolha
 
-    texto_normalizado = texto.casefold()
-    correspondencias = [
-        escolha
+    texto_normalizado = _normalizar_texto_semantico(texto)
+    if not texto_normalizado:
+        return None
+
+    def termos_escolha(escolha: dict[str, Any]) -> list[str]:
+        termos = escolha.get("match_terms")
+        if isinstance(termos, list):
+            valores = [str(termo) for termo in termos if str(termo).strip()]
+            if valores:
+                return valores
+        return [str(escolha.get("nome") or "")]
+
+    correspondencias_exatas = []
+    for escolha in escolhas:
+        for termo in termos_escolha(escolha):
+            if _normalizar_texto_semantico(termo) == texto_normalizado:
+                correspondencias_exatas.append(escolha)
+                break
+
+    if len(correspondencias_exatas) == 1:
+        return correspondencias_exatas[0]
+    if len(correspondencias_exatas) > 1:
+        return None
+
+    tokens_consulta = _tokens_semanticos_empresa(texto_normalizado)
+
+    def pontuar_termo(termo: str) -> float:
+        termo_normalizado = _normalizar_texto_semantico(termo)
+        if not termo_normalizado:
+            return 0.0
+
+        if termo_normalizado == texto_normalizado:
+            return 1.0
+
+        termo_tokens = _tokens_semanticos_empresa(termo_normalizado)
+        contem = (
+            len(texto_normalizado) >= 4
+            and (texto_normalizado in termo_normalizado or termo_normalizado in texto_normalizado)
+        )
+        prefixo = bool(tokens_consulta) and any(
+            token_consulta.startswith(token_termo) or token_termo.startswith(token_consulta)
+            for token_consulta in tokens_consulta
+            for token_termo in termo_tokens
+        )
+
+        cobertura_consulta = 0.0
+        if tokens_consulta:
+            intersecao = tokens_consulta & termo_tokens
+            bonus_prefixo = 0.75 * min(
+                len(tokens_consulta),
+                sum(
+                    1
+                    for token_consulta in tokens_consulta
+                    if any(
+                        token_consulta.startswith(token_termo)
+                        or token_termo.startswith(token_consulta)
+                        for token_termo in termo_tokens
+                    )
+                ),
+            )
+            cobertura_consulta = min(
+                1.0,
+                (len(intersecao) + bonus_prefixo) / len(tokens_consulta),
+            )
+            if tokens_consulta.issubset(termo_tokens):
+                cobertura_consulta = 1.0
+
+        score = SequenceMatcher(None, texto_normalizado, termo_normalizado).ratio() * 0.65
+        if contem:
+            score = max(score, 0.88)
+        if prefixo and len(tokens_consulta) == 1:
+            score = max(score, 0.83)
+        if cobertura_consulta:
+            score = max(
+                score,
+                min(
+                    0.97,
+                    0.55
+                    + (cobertura_consulta * 0.35)
+                    + (0.08 if contem else 0.0),
+                ),
+            )
+        return min(score, 1.0)
+
+    candidatos = [
+        (max((pontuar_termo(termo) for termo in termos_escolha(escolha)), default=0.0), escolha)
         for escolha in escolhas
-        if str(escolha["nome"]).strip().casefold() == texto_normalizado
     ]
-    if len(correspondencias) == 1:
-        return correspondencias[0]
-    return None
+    candidatos = [
+        (score, escolha)
+        for score, escolha in candidatos
+        if score >= _SELECAO_EMPRESA_SCORE_MINIMO
+    ]
+    if not candidatos:
+        return None
+
+    candidatos.sort(key=lambda item: (-item[0], str(item[1].get("nome") or "")))
+    melhor_score, melhor_escolha = candidatos[0]
+    if len(candidatos) > 1 and (melhor_score - candidatos[1][0]) < _SELECAO_EMPRESA_MARGEM_MINIMA:
+        return None
+    return melhor_escolha
 
 
 async def _vincular_cliente_e_responder(
