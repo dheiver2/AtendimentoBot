@@ -35,8 +35,9 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="Qual o preço?")
+    @patch("handlers.agent.listar_empresas", new_callable=AsyncMock, return_value=[])
     @patch("handlers.agent.obter_empresa_do_usuario", return_value=None)
-    async def test_usuario_sem_empresa(self, mock_emp, mock_val, mock_rate):
+    async def test_usuario_sem_empresa(self, mock_emp, mock_empresas, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
 
         update = make_update("Qual o preço?")
@@ -49,8 +50,9 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="Qual o preço?")
+    @patch("handlers.agent.listar_empresas", new_callable=AsyncMock, return_value=[])
     @patch("handlers.agent.obter_empresa_do_usuario", return_value=None)
-    async def test_usuario_sem_empresa_com_allowlist_exige_link_admin(self, mock_emp, mock_val, mock_rate):
+    async def test_usuario_sem_empresa_com_allowlist_exige_link_admin(self, mock_emp, mock_empresas, mock_val, mock_rate):
         from handlers.agent import interagir_com_agente
 
         update = make_update("Qual o preço?", user_id=100)
@@ -61,6 +63,60 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         texto = update.message.reply_text.call_args[0][0]
         self.assertIn("link de admin", texto.lower())
         self.assertIn("/empresas", texto.lower())
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="Oi")
+    @patch("handlers.agent._mostrar_seletor_empresas", new_callable=AsyncMock)
+    @patch("handlers.agent.listar_empresas", new_callable=AsyncMock)
+    @patch("handlers.agent.obter_empresa_do_usuario", return_value=None)
+    async def test_usuario_sem_empresa_com_empresas_recebe_seletor_automatico(
+        self,
+        mock_emp,
+        mock_empresas,
+        mock_seletor,
+        mock_val,
+        mock_rate,
+    ):
+        from handlers.agent import interagir_com_agente
+
+        mock_empresas.return_value = [
+            self._empresa(empresa_id=1, nome="Acme"),
+            self._empresa(empresa_id=2, nome="Beta"),
+        ]
+        update = make_update("Oi")
+        ctx = make_context()
+
+        await interagir_com_agente(update, ctx)
+
+        mock_seletor.assert_awaited_once_with(update, ctx, mock_empresas.return_value)
+        update.message.reply_text.assert_not_called()
+
+    @patch("handlers.agent.verificar_rate_limit", return_value=None)
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="Oi")
+    @patch("handlers.agent._mostrar_seletor_empresas", new_callable=AsyncMock)
+    @patch("handlers.agent.listar_empresas", new_callable=AsyncMock)
+    @patch("handlers.agent.obter_empresa_do_usuario", return_value=None)
+    async def test_usuario_allowlist_sem_empresa_com_empresas_recebe_seletor_automatico(
+        self,
+        mock_emp,
+        mock_empresas,
+        mock_seletor,
+        mock_val,
+        mock_rate,
+    ):
+        from handlers.agent import interagir_com_agente
+
+        mock_empresas.return_value = [
+            self._empresa(empresa_id=1, nome="Acme"),
+        ]
+        update = make_update("Oi", user_id=999)
+        ctx = make_context()
+
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            await interagir_com_agente(update, ctx)
+
+        mock_seletor.assert_awaited_once_with(update, ctx, mock_empresas.return_value)
+        update.message.reply_text.assert_not_called()
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
     @patch("handlers.agent.validar_mensagem_usuario", return_value="Oi")

@@ -11,6 +11,7 @@ from agent_service import (
 )
 from database import (
     criar_feedback_resposta,
+    listar_empresas,
     listar_faqs,
     obter_empresa_do_usuario,
     registrar_conversa,
@@ -22,6 +23,7 @@ from validators import InputValidationError, validar_mensagem_usuario
 from vector_store import empresa_tem_documentos
 
 from .common import _pode_iniciar_admin_telegram_sem_link
+from .onboarding import _mostrar_seletor_empresas
 
 __all__ = ["feedback_resposta_callback", "interagir_com_agente"]
 
@@ -70,6 +72,11 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
 
     empresa = await obter_empresa_do_usuario(usuario_id)
     if not empresa:
+        empresas = await listar_empresas()
+        if empresas:
+            await _mostrar_seletor_empresas(update, context, empresas)
+            return
+
         if _pode_iniciar_admin_telegram_sem_link(usuario_id):
             mensagem = (
                 "👋 Este atendimento ainda não está configurado para você.\n"
