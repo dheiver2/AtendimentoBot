@@ -394,7 +394,7 @@ def deve_usar_rag(pergunta: str) -> bool:
 def decidir_resposta(
     pergunta: str,
     empresa: dict,
-    faqs: list[dict],
+    faqs: list[dict] | None,
     usuario_admin: bool,
     tem_documentos: bool,
     resposta_pausado: str,
@@ -402,6 +402,11 @@ def decidir_resposta(
     historico_recente: Sequence[Mapping[str, object]] | None = None,
 ) -> ResponseDecision:
     """Classifica a mensagem e escolhe a estratégia de resposta."""
+    if not pergunta or not pergunta.strip():
+        return ResponseDecision("clarify", answer="Não recebi sua mensagem. Pode repetir?", reason="empty_input")
+
+    faqs = faqs or []
+
     if not bool(empresa.get("ativo", 1)):
         return ResponseDecision("paused", answer=resposta_pausado, reason="agent_paused")
 

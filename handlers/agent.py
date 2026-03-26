@@ -23,7 +23,7 @@ from vector_store import empresa_tem_documentos
 
 from .common import _pode_iniciar_admin_telegram_sem_link
 
-__all__ = ["feedback_resposta_callback", "interagir_com_agente", "invalidar_cache_faq"]
+__all__ = ["feedback_resposta_callback", "interagir_com_agente"]
 
 
 def _extrair_resposta_e_conversa_id(resultado: object) -> tuple[str, int | None]:
@@ -55,9 +55,9 @@ async def _responder_e_registrar(update: Update, empresa: dict, pergunta: str, r
 
 async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processa mensagens do proprio usuario e responde com FAQ ou RAG."""
-    user_id = update.effective_user.id
+    usuario_id = update.effective_user.id
 
-    rate_msg = verificar_rate_limit(limiter_mensagens, user_id)
+    rate_msg = verificar_rate_limit(limiter_mensagens, usuario_id)
     if rate_msg:
         await update.message.reply_text(rate_msg)
         return
@@ -68,9 +68,9 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"⚠️ {exc.message}")
         return
 
-    empresa = await obter_empresa_do_usuario(user_id)
+    empresa = await obter_empresa_do_usuario(usuario_id)
     if not empresa:
-        if _pode_iniciar_admin_telegram_sem_link(user_id):
+        if _pode_iniciar_admin_telegram_sem_link(usuario_id):
             mensagem = (
                 "👋 Este atendimento ainda não está configurado para você.\n"
                 "Seu usuário está autorizado como admin. Use /start para configurar uma empresa "
@@ -89,7 +89,7 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
     resultado = await processar_pergunta(
         empresa=empresa,
         pergunta_bruta=pergunta,
-        usuario_id=user_id,
+        usuario_id=usuario_id,
         usuario_admin=bool(empresa.get("_usuario_admin")),
         faq_loader=listar_faqs,
         registrar_conversa_fn=registrar_conversa,
@@ -107,7 +107,7 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         feedback_id = await criar_feedback_resposta(
             conversa_id,
             empresa["id"],
-            user_id,
+            usuario_id,
             canal="telegram",
             resposta_bot=resposta,
         )

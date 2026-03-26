@@ -1,4 +1,5 @@
 import json
+import logging
 import secrets
 import sqlite3
 from typing import Any
@@ -6,6 +7,8 @@ from typing import Any
 import aiosqlite
 
 from config import DB_PATH
+
+logger = logging.getLogger(__name__)
 
 
 def _erro_tabela_inexistente(exc: sqlite3.OperationalError, tabela: str) -> bool:
@@ -194,14 +197,24 @@ async def _garantir_tabela_empresa_admins(db: aiosqlite.Connection):
 
 async def _deduplicar_documentos(db: aiosqlite.Connection):
     """Remove registros duplicados de documentos, mantendo o mais recente por arquivo."""
-    await db.execute("""
-        DELETE FROM documentos
+    cursor = await db.execute("""
+        SELECT id, empresa_id, nome_arquivo FROM documentos
         WHERE id NOT IN (
             SELECT MAX(id)
             FROM documentos
             GROUP BY empresa_id, nome_arquivo
         )
     """)
+    duplicados = await cursor.fetchall()
+    if duplicados:
+        logger.info(
+            "Removendo %d documento(s) duplicado(s): %s",
+            len(duplicados),
+            [(row[1], row[2]) for row in duplicados],
+        )
+        ids = [row[0] for row in duplicados]
+        placeholders = ", ".join("?" for _ in ids)
+        await db.execute(f"DELETE FROM documentos WHERE id IN ({placeholders})", ids)
 
 
 def _gerar_link_token() -> str:

@@ -24,6 +24,14 @@ class RateLimiter:
         self._guidance = guidance
         self._requests: dict[int, list[float]] = defaultdict(list)
 
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @property
+    def guidance(self) -> str:
+        return self._guidance
+
     def permitir(self, user_id: int) -> bool:
         """Retorna True se o usuário pode fazer a ação, False se excedeu o limite."""
         agora = time.monotonic()
@@ -91,9 +99,9 @@ def verificar_rate_limit(limiter: RateLimiter, user_id: int) -> str | None:
 
     segundos = limiter.tempo_restante(user_id)
     mensagem = (
-        f"⏳ Você atingiu o limite temporário de {limiter._label}. "
+        f"⏳ Você atingiu o limite temporário de {limiter.label}. "
         f"Aguarde {segundos} segundo(s) antes de tentar novamente."
     )
-    if limiter._guidance:
-        mensagem += f" {limiter._guidance}"
+    if limiter.guidance:
+        mensagem += f" {limiter.guidance}"
     return mensagem

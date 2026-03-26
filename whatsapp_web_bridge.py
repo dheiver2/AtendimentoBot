@@ -310,7 +310,7 @@ class WhatsAppWebBridgeServer:
 
         future = asyncio.run_coroutine_threadsafe(self._build_actions(payload), self._event_loop)
         try:
-            actions = future.result()
+            actions = future.result(timeout=30)
         except Exception as exc:
             logger.error("Falha ao processar mensagem do WhatsApp Web: %s", exc, exc_info=True)
             self._write_json_response(
@@ -384,10 +384,21 @@ class WhatsAppWebBridgeServer:
 
     async def _resolve_company(self) -> dict | None:
         if self.settings.default_company_id is not None:
-            return await obter_empresa_por_id(self.settings.default_company_id)
+            empresa = await obter_empresa_por_id(self.settings.default_company_id)
+            if empresa is None:
+                logger.warning(
+                    "WHATSAPP_DEFAULT_COMPANY_ID=%s nao corresponde a nenhuma empresa cadastrada.",
+                    self.settings.default_company_id,
+                )
+            return empresa
 
         if self.settings.default_company_link_token:
-            return await obter_empresa_por_link_token(self.settings.default_company_link_token)
+            empresa = await obter_empresa_por_link_token(self.settings.default_company_link_token)
+            if empresa is None:
+                logger.warning(
+                    "WHATSAPP_DEFAULT_COMPANY_LINK_TOKEN nao corresponde a nenhuma empresa cadastrada.",
+                )
+            return empresa
 
         companies = await listar_empresas()
         if len(companies) == 1:
