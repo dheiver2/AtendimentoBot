@@ -100,12 +100,15 @@ def _pode_iniciar_admin_telegram_sem_link(user_id: int) -> bool:
 def _mensagem_admin_telegram_nao_configurado(user_id: int) -> str:
     """Mensagem padrão para usuários sem empresa/admin resolvido no Telegram."""
     if _pode_iniciar_admin_telegram_sem_link(user_id):
-        return "❌ Seu agente ainda não foi configurado. Use /start primeiro."
+        return (
+            "❌ Seu agente ainda não foi configurado.\n"
+            "Use /registrar para cadastrar uma empresa ou /empresas para escolher um atendimento."
+        )
 
     return (
         "❌ Este usuário ainda não tem acesso de gestão.\n"
         "Se você recebeu um link de admin, abra-o para liberar a gestão. "
-        "Se é cliente, abra o link enviado pelo atendimento."
+        "Se é cliente, use /empresas ou abra o link enviado pelo atendimento."
     )
 
 

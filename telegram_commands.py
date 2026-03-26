@@ -17,6 +17,7 @@ def obter_comandos_padrao() -> list[BotCommand]:
     """Comandos exibidos para chats privados ainda sem papel definido."""
     return [
         BotCommand("start", "Iniciar atendimento ou configuração"),
+        BotCommand("empresas", "Escolher empresa para atendimento"),
         BotCommand("meuid", "Mostrar meu ID do Telegram"),
         BotCommand("ajuda", "Ver ajuda rápida"),
     ]
@@ -26,6 +27,7 @@ def obter_comandos_cliente() -> list[BotCommand]:
     """Comandos exibidos para clientes vinculados por link."""
     return [
         BotCommand("start", "Abrir o atendimento"),
+        BotCommand("empresas", "Trocar empresa do atendimento"),
         BotCommand("meuid", "Mostrar meu ID do Telegram"),
         BotCommand("sair", "Sair deste atendimento"),
         BotCommand("ajuda", "Ver ajuda rápida"),

@@ -51,6 +51,7 @@ from .faq import (
 from .images import cmd_imagem, receber_imagem_bot
 from .onboarding import (
     cancelar_registro,
+    cmd_empresas,
     cmd_registrar,
     cmd_reset,
     cmd_sair,
@@ -64,6 +65,7 @@ from .onboarding import (
     recomecar_registro_callback,
     reset_cancelar_callback,
     reset_confirmar_callback,
+    selecionar_empresa_callback,
 )
 from .panel import (
     cmd_ajuda,
@@ -214,6 +216,7 @@ def get_handlers() -> list:
     return [
         CommandHandler("ajuda", cmd_ajuda),
         CommandHandler("meuid", cmd_meuid),
+        CommandHandler("empresas", cmd_empresas),
         CommandHandler("link", cmd_link),
         CommandHandler("painel", cmd_painel),
         CommandHandler("documentos", cmd_documentos),
@@ -222,6 +225,7 @@ def get_handlers() -> list:
         CommandHandler("ativar", cmd_ativar),
         CommandHandler("template", cmd_template),
         CommandHandler("sair", cmd_sair),
+        CallbackQueryHandler(selecionar_empresa_callback, pattern=r"^cliente_empresa:\d+$"),
         CallbackQueryHandler(feedback_resposta_callback, pattern=r"^feedback:(up|down):\d+$"),
         CallbackQueryHandler(painel_refresh_callback, pattern="^painel_refresh$"),
         CallbackQueryHandler(painel_documentos_callback, pattern="^painel_documentos$"),

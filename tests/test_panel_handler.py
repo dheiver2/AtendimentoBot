@@ -74,6 +74,7 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("EmpCliente", texto)
         self.assertIn("/meuid", texto)
+        self.assertIn("/empresas", texto)
 
     @patch("handlers.panel.obter_empresa_por_admin", return_value=None)
     @patch("handlers.panel.obter_empresa_do_cliente", return_value=None)
@@ -84,6 +85,7 @@ class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
         await cmd_ajuda(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("/start", texto)
+        self.assertIn("/empresas", texto)
         self.assertIn("/meuid", texto)
 
     @patch("handlers.panel.obter_empresa_por_admin", return_value=None)

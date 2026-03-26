@@ -116,7 +116,8 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding._obter_payload_start", return_value=None)
-    async def test_novo_usuario_inicia_onboarding(self, mock_payload, mock_admin, mock_cliente, mock_sync):
+    @patch("handlers.onboarding.listar_empresas", new_callable=AsyncMock, return_value=[])
+    async def test_novo_usuario_inicia_onboarding(self, mock_empresas, mock_payload, mock_admin, mock_cliente, mock_sync):
         from handlers.common import AGUARDANDO_NOME_EMPRESA
         from handlers.onboarding import cmd_start
 
@@ -129,7 +130,8 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding._obter_payload_start", return_value=None)
-    async def test_usuario_nao_autorizado_nao_inicia_onboarding_sem_link(self, mock_payload, mock_admin, mock_cliente, mock_sync):
+    @patch("handlers.onboarding.listar_empresas", new_callable=AsyncMock, return_value=[])
+    async def test_usuario_nao_autorizado_nao_inicia_onboarding_sem_link(self, mock_empresas, mock_payload, mock_admin, mock_cliente, mock_sync):
         from handlers.onboarding import cmd_start
 
         update = make_update(user_id=100)
@@ -146,7 +148,8 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
     @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding._obter_payload_start", return_value=None)
-    async def test_usuario_autorizado_por_lista_inicia_onboarding(self, mock_payload, mock_admin, mock_cliente, mock_sync):
+    @patch("handlers.onboarding.listar_empresas", new_callable=AsyncMock, return_value=[])
+    async def test_usuario_autorizado_por_lista_inicia_onboarding(self, mock_empresas, mock_payload, mock_admin, mock_cliente, mock_sync):
         from handlers.common import AGUARDANDO_NOME_EMPRESA
         from handlers.onboarding import cmd_start
 
@@ -156,6 +159,33 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
             result = await cmd_start(update, ctx)
 
         self.assertEqual(result, AGUARDANDO_NOME_EMPRESA)
+
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    @patch("handlers.onboarding.listar_empresas", new_callable=AsyncMock)
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding._obter_payload_start", return_value=None)
+    async def test_cliente_sem_vinculo_com_empresas_recebe_seletor(self, mock_payload, mock_admin, mock_cliente, mock_empresas, mock_sync):
+        from handlers.onboarding import cmd_start
+
+        mock_empresas.return_value = [
+            make_empresa(empresa_id=1, nome="Acme"),
+            make_empresa(empresa_id=2, nome="Beta"),
+        ]
+        update = make_update(user_id=100)
+        ctx = make_context()
+
+        result = await cmd_start(update, ctx)
+
+        self.assertEqual(result, ConversationHandler.END)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Escolha a empresa", texto)
+        self.assertIn("/registrar", texto)
+        teclado = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(
+            [linha[0].text for linha in teclado.inline_keyboard],
+            ["Acme", "Beta"],
+        )
 
 
 class CmdRegistrarTests(unittest.IsolatedAsyncioTestCase):
@@ -189,6 +219,58 @@ class CmdRegistrarTests(unittest.IsolatedAsyncioTestCase):
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("usuário autorizado como admin", texto)
         self.assertNotIn("nome da sua empresa", texto.lower())
+
+
+class CmdEmpresasTests(unittest.IsolatedAsyncioTestCase):
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_do_cliente")
+    @patch("handlers.onboarding.listar_empresas", new_callable=AsyncMock)
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    async def test_cmd_empresas_reabre_seletor_para_cliente(self, mock_sync, mock_empresas, mock_cliente, mock_admin):
+        from handlers.onboarding import cmd_empresas
+
+        mock_cliente.return_value = make_empresa(empresa_id=1, nome="Acme")
+        mock_empresas.return_value = [
+            make_empresa(empresa_id=1, nome="Acme"),
+            make_empresa(empresa_id=2, nome="Beta"),
+        ]
+        update = make_update("/empresas")
+        ctx = make_context()
+
+        await cmd_empresas(update, ctx)
+
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Atendimento atual: Acme", texto)
+        teclado = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(
+            [linha[0].text for linha in teclado.inline_keyboard],
+            ["Acme", "Beta"],
+        )
+        mock_sync.assert_awaited_once_with(update, ctx, "cliente")
+
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_id")
+    @patch("handlers.onboarding.vincular_cliente_empresa", new_callable=AsyncMock)
+    @patch("handlers.onboarding._enviar_boas_vindas_cliente", new_callable=AsyncMock)
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    async def test_selecionar_empresa_callback_vincula_cliente(self, mock_sync, mock_boas_vindas, mock_vincular, mock_empresa_id, mock_admin):
+        from handlers.onboarding import selecionar_empresa_callback
+
+        empresa = make_empresa(empresa_id=2, nome="Beta")
+        mock_empresa_id.return_value = empresa
+        update = make_update(callback_data="cliente_empresa:2")
+        ctx = make_context()
+
+        await selecionar_empresa_callback(update, ctx)
+
+        update.callback_query.answer.assert_awaited_once()
+        update.callback_query.edit_message_text.assert_awaited_once_with(
+            "✅ Atendimento selecionado: Beta."
+        )
+        mock_vincular.assert_awaited_once_with(2, 100)
+        mock_sync.assert_awaited_once_with(update, ctx, "cliente")
+        mock_boas_vindas.assert_awaited_once_with(update.callback_query.message, empresa)
+        self.assertTrue(ctx.user_data["identidade_visual_enviada"])
 
 
 class ReceberNomeEmpresaTests(unittest.IsolatedAsyncioTestCase):
@@ -410,3 +492,4 @@ class CmdSairTests(unittest.IsolatedAsyncioTestCase):
         mock_sync.assert_awaited_once()
         texto = update.message.reply_text.call_args[0][0]
         self.assertIn("Você saiu do atendimento de *Acme*", texto)
+        self.assertIn("/empresas", texto)

@@ -73,13 +73,14 @@ async def interagir_com_agente(update: Update, context: ContextTypes.DEFAULT_TYP
         if _pode_iniciar_admin_telegram_sem_link(user_id):
             mensagem = (
                 "👋 Este atendimento ainda não está configurado para você.\n"
-                "Seu usuário está autorizado como admin. Envie /start para iniciar a configuração."
+                "Seu usuário está autorizado como admin. Use /registrar para cadastrar uma empresa "
+                "ou /empresas para escolher um atendimento."
             )
         else:
             mensagem = (
                 "👋 Este atendimento ainda não está configurado para você.\n"
                 "Se você recebeu um link de admin, abra-o para liberar a gestão. "
-                "Se é cliente, abra o link recebido do atendimento."
+                "Se é cliente, use /empresas ou abra o link recebido do atendimento."
             )
         await update.message.reply_text(mensagem)
         return

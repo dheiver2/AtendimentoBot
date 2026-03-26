@@ -10,8 +10,10 @@ from database import (
     criar_empresa,
     desvincular_cliente,
     excluir_empresa_com_dados,
+    listar_empresas,
     obter_empresa_do_cliente,
     obter_empresa_por_admin,
+    obter_empresa_por_id,
     obter_empresa_por_admin_link_token,
     obter_empresa_por_link_token,
     vincular_cliente_empresa,
@@ -45,6 +47,71 @@ from .common import (
 )
 
 logger = logging.getLogger(__name__)
+_CLIENTE_EMPRESA_CALLBACK_PREFIX = "cliente_empresa:"
+
+
+def _texto_selecao_empresas(
+    *,
+    empresa_atual: dict | None = None,
+    admin_pode_registrar: bool = False,
+) -> str:
+    linhas = ["🏢 Escolha a empresa para continuar."]
+
+    if empresa_atual:
+        linhas.append(f"Atendimento atual: {empresa_atual['nome']}.")
+        linhas.append("Toque em outra empresa para trocar ou selecione a mesma para reabrir o atendimento.")
+    else:
+        linhas.append("Toque em uma das opções abaixo para vincular este chat ao atendimento correto.")
+
+    if admin_pode_registrar:
+        linhas.append("Se você é admin e quer cadastrar uma nova empresa, use /registrar.")
+
+    return "\n\n".join(linhas)
+
+
+def _teclado_selecao_empresas(empresas: list[dict]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                empresa["nome"],
+                callback_data=f"{_CLIENTE_EMPRESA_CALLBACK_PREFIX}{empresa['id']}",
+            )
+        ]
+        for empresa in empresas
+    ])
+
+
+async def _mostrar_seletor_empresas(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    empresas: list[dict],
+    *,
+    empresa_atual: dict | None = None,
+) -> None:
+    await _sincronizar_comandos_do_chat(update, context, "cliente" if empresa_atual else "padrao")
+    await update.effective_message.reply_text(
+        _texto_selecao_empresas(
+            empresa_atual=empresa_atual,
+            admin_pode_registrar=(
+                empresa_atual is None and _pode_iniciar_admin_telegram_sem_link(update.effective_user.id)
+            ),
+        ),
+        reply_markup=_teclado_selecao_empresas(empresas),
+    )
+
+
+async def _vincular_cliente_telegram(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    empresa: dict,
+    *,
+    mensagem=None,
+) -> None:
+    await vincular_cliente_empresa(empresa["id"], update.effective_user.id)
+    await _sincronizar_comandos_do_chat(update, context, "cliente")
+    context.user_data.pop("identidade_visual_enviada", None)
+    await _enviar_boas_vindas_cliente(mensagem or update.effective_message, empresa)
+    context.user_data["identidade_visual_enviada"] = True
 
 
 async def _iniciar_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,6 +140,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = _obter_payload_start(context)
     empresa_admin = await obter_empresa_por_admin(user_id)
     empresa_cliente = await obter_empresa_do_cliente(user_id)
+    empresas_disponiveis = await listar_empresas() if not payload and not empresa_admin and not empresa_cliente else []
     formatos = listar_formatos_suportados()
 
     if payload:
@@ -133,11 +201,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return ConversationHandler.END
 
-        await vincular_cliente_empresa(empresa_link["id"], user_id)
-        await _sincronizar_comandos_do_chat(update, context, "cliente")
-        context.user_data.pop("identidade_visual_enviada", None)
-        await _enviar_boas_vindas_cliente(mensagem, empresa_link)
-        context.user_data["identidade_visual_enviada"] = True
+        await _vincular_cliente_telegram(update, context, empresa_link, mensagem=mensagem)
         return ConversationHandler.END
 
     if empresa_admin:
@@ -165,16 +229,84 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["identidade_visual_enviada"] = True
         return ConversationHandler.END
 
+    if empresas_disponiveis:
+        await _mostrar_seletor_empresas(update, context, empresas_disponiveis)
+        return ConversationHandler.END
+
     await _sincronizar_comandos_do_chat(update, context, "padrao")
     if not _pode_iniciar_admin_telegram_sem_link(user_id):
         await mensagem.reply_text(
             "👋 Este usuário ainda não foi vinculado a um atendimento.\n"
             "Se você recebeu um link de admin, abra-o para liberar a gestão. "
-            "Se é cliente, abra o link enviado pelo atendimento."
+            "Se é cliente, use /empresas ou abra o link enviado pelo atendimento."
         )
         return ConversationHandler.END
 
     return await _iniciar_onboarding(update, context)
+
+
+async def cmd_empresas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Abre o seletor de empresas para clientes no Telegram."""
+    user_id = update.effective_user.id
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    if empresa_admin:
+        await update.effective_message.reply_text(
+            "🔒 Admins gerenciam a própria empresa com /painel.\n"
+            "O seletor /empresas é destinado aos clientes."
+        )
+        return
+
+    empresas = await listar_empresas()
+    if not empresas:
+        if _pode_iniciar_admin_telegram_sem_link(user_id):
+            await update.effective_message.reply_text(
+                "👋 Ainda não há empresas cadastradas neste bot.\n"
+                "Use /registrar para criar a primeira empresa."
+            )
+        else:
+            await update.effective_message.reply_text(
+                "👋 Ainda não há empresas cadastradas neste bot.\n"
+                "Aguarde o administrador concluir a configuração."
+            )
+        return
+
+    empresa_cliente = await obter_empresa_do_cliente(user_id)
+    await _mostrar_seletor_empresas(
+        update,
+        context,
+        empresas,
+        empresa_atual=empresa_cliente,
+    )
+
+
+async def selecionar_empresa_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Vincula o cliente à empresa escolhida no seletor inline."""
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+    user_id = update.effective_user.id
+
+    empresa_admin = await obter_empresa_por_admin(user_id)
+    if empresa_admin:
+        await query.edit_message_text(
+            "🔒 Admins não usam este seletor. Use /painel para gerenciar sua empresa."
+        )
+        return
+
+    raw_empresa_id = (query.data or "").removeprefix(_CLIENTE_EMPRESA_CALLBACK_PREFIX)
+    if not raw_empresa_id.isdigit():
+        await query.edit_message_text("❌ Não foi possível identificar a empresa escolhida.")
+        return
+
+    empresa = await obter_empresa_por_id(int(raw_empresa_id))
+    if not empresa:
+        await query.edit_message_text("❌ Esta empresa não está mais disponível.")
+        return
+
+    await query.edit_message_text(f"✅ Atendimento selecionado: {empresa['nome']}.")
+    await _vincular_cliente_telegram(update, context, empresa, mensagem=query.message)
 
 
 async def cmd_registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -433,7 +565,8 @@ async def cmd_sair(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _sincronizar_comandos_do_chat(update, context, "padrao")
         await update.message.reply_text(
             f"✅ Você saiu do atendimento de *{empresa['nome']}*.\n\n"
-            "Se quiser entrar novamente, use o link de atendimento enviado pelo administrador.",
+            "Se quiser escolher outro atendimento, use /empresas.\n"
+            "Se preferir, também pode abrir o link enviado pelo administrador.",
             parse_mode="Markdown",
         )
     else:

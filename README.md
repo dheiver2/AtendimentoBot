@@ -21,6 +21,7 @@ Perfis atuais:
 - Imagem personalizada do agente (`/imagem`)
 - Identidade visual por empresa na conversa do cliente
 - Atendimento simultâneo via Telegram e WhatsApp Web
+- Seleção de empresa pelo cliente com `/empresas` quando houver múltiplos atendimentos
 - Capa automática com imagem, nome e saudação da empresa
 - Reenvio da identidade visual na primeira interação do cliente
 - Horário de atendimento e fallback para atendimento humano
@@ -133,7 +134,7 @@ Como funciona hoje:
 - O Telegram continua funcionando normalmente com painel, callbacks e menu nativo.
 - O WhatsApp expõe os mesmos fluxos por comandos de texto e mensagens de mídia.
 - Admins podem configurar empresa, documentos, FAQ, imagem, horário, fallback e edições diretamente pelo WhatsApp.
-- Clientes entram no atendimento enviando `/start TOKEN` para o mesmo número conectado no WhatsApp Web.
+- Clientes entram no atendimento enviando `/start TOKEN` para o mesmo número conectado no WhatsApp Web ou usando `/empresas` para escolher manualmente.
 - Se existir apenas uma empresa cadastrada, o bridge ainda pode responder clientes sem vínculo explícito.
 - Se existir mais de uma empresa, defina `WHATSAPP_DEFAULT_COMPANY_ID` ou `WHATSAPP_DEFAULT_COMPANY_LINK_TOKEN` no `.env` para o fallback automático.
 
@@ -148,7 +149,7 @@ Passo a passo:
 6. Depois da primeira autenticacao, a sessao fica salva em `data/whatsapp-web-session`.
    Se `WHATSAPP_WEB_FORCE_NEW_QR=1`, essa sessao sera apagada no start e um novo QR sera exibido em toda execucao.
 7. Para administrar pelo WhatsApp, use comandos como `/start`, `/painel`, `/upload`, `/faq`, `/imagem`, `/status` e `/link`.
-8. Para clientes, gere o token com `/link` e oriente o envio de `/start TOKEN`.
+8. Para clientes, gere o token com `/link` e oriente o envio de `/start TOKEN` ou `/empresas`.
 
 Observacoes:
 
