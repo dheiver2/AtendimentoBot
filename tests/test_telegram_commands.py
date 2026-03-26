@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from telegram import BotCommandScopeAllPrivateChats, BotCommandScopeChat
+from telegram.error import BadRequest
 
 import telegram_commands
 
@@ -65,3 +66,22 @@ class TelegramCommandsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("painel", comandos_primeiro)
         self.assertEqual(comandos_segundo, ["start", "empresas", "meuid", "sair", "ajuda"])
         self.assertEqual(comandos_terceiro, ["start", "empresas", "meuid", "sair", "ajuda"])
+
+    async def test_sincronizar_comandos_existentes_ignora_chat_not_found(self):
+        bot = AsyncMock()
+        bot.set_my_commands.side_effect = [
+            BadRequest("Chat not found"),
+            None,
+            None,
+        ]
+
+        await telegram_commands.sincronizar_comandos_existentes(bot, [10], [20, 30])
+
+        self.assertEqual(bot.set_my_commands.await_count, 3)
+
+    async def test_sincronizar_comandos_existentes_propagates_bad_request_diferente(self):
+        bot = AsyncMock()
+        bot.set_my_commands.side_effect = BadRequest("Forbidden")
+
+        with self.assertRaises(BadRequest):
+            await telegram_commands.sincronizar_comandos_existentes(bot, [10], [])

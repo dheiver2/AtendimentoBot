@@ -1,5 +1,6 @@
 """Comandos nativos do Telegram por perfil de usuário."""
 
+import logging
 from typing import Literal
 
 from telegram import (
@@ -9,8 +10,10 @@ from telegram import (
     BotCommandScopeChat,
     MenuButtonCommands,
 )
+from telegram.error import BadRequest
 
 PerfilComando = Literal["admin", "cliente", "padrao"]
+logger = logging.getLogger(__name__)
 
 
 def obter_comandos_padrao() -> list[BotCommand]:
@@ -90,7 +93,22 @@ async def sincronizar_comandos_existentes(
 ):
     """Reaplica os menus corretos para chats já cadastrados no banco."""
     for chat_id in admin_chat_ids:
-        await sincronizar_comandos_chat(bot, chat_id, "admin")
+        try:
+            await sincronizar_comandos_chat(bot, chat_id, "admin")
+        except BadRequest as exc:
+            if str(exc).lower() == "chat not found":
+                logger.warning("Nao foi possivel sincronizar comandos do admin %s: Chat not found", chat_id)
+                continue
+            raise
 
     for chat_id in cliente_chat_ids:
-        await sincronizar_comandos_chat(bot, chat_id, "cliente")
+        try:
+            await sincronizar_comandos_chat(bot, chat_id, "cliente")
+        except BadRequest as exc:
+            if str(exc).lower() == "chat not found":
+                logger.warning(
+                    "Nao foi possivel sincronizar comandos do cliente %s: Chat not found",
+                    chat_id,
+                )
+                continue
+            raise
