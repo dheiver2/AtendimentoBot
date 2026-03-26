@@ -8,6 +8,8 @@ import rag_chain
 class RagChainTests(unittest.TestCase):
     def setUp(self):
         rag_chain._response_cache.clear()
+        rag_chain._get_llm_cached.cache_clear()
+        rag_chain._CACHED_PROMPT = None
 
     def test_template_considera_regras_operacionais(self):
         self.assertIn("regras operacionais", rag_chain.TEMPLATE.lower())
@@ -71,6 +73,8 @@ class _FakeChain:
 class GerarRespostaTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         rag_chain._response_cache.clear()
+        rag_chain._get_llm_cached.cache_clear()
+        rag_chain._CACHED_PROMPT = None
 
     async def test_sem_chunks_retorna_mensagem_padrao(self):
         with patch("rag_chain.buscar_contexto", return_value=[]):

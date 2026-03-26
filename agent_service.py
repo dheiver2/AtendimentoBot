@@ -171,6 +171,34 @@ async def _registrar_conversa_sincrona(
     return resultado if isinstance(resultado, int) else None
 
 
+async def _tentar_registrar_conversa_sincrona(
+    empresa_id: int,
+    usuario_id: int,
+    pergunta: str,
+    resposta: str,
+    *,
+    registrar_conversa_fn: ConversaRegistrar,
+) -> int | None:
+    """Tenta persistir a conversa sem degradar a resposta já gerada ao usuário."""
+    try:
+        return await _registrar_conversa_sincrona(
+            empresa_id,
+            usuario_id,
+            pergunta,
+            resposta,
+            registrar_conversa_fn=registrar_conversa_fn,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Falha ao registrar conversa empresa=%s usuario=%s: %s",
+            empresa_id,
+            usuario_id,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
 async def processar_pergunta(
     *,
     empresa: dict,
@@ -212,9 +240,15 @@ async def processar_pergunta(
                 return AgentResponse(resposta_validacao, decision="validation")
             return resposta_validacao
 
-    faqs = await _obter_faqs_cacheadas(empresa["id"], faq_loader=faq_loader)
+    # Carrega FAQs e histórico em paralelo para reduzir latência
+    faqs_task = asyncio.ensure_future(
+        _obter_faqs_cacheadas(empresa["id"], faq_loader=faq_loader)
+    )
+    historico_task = asyncio.ensure_future(
+        conversation_loader(empresa["id"], usuario_id, 6)
+    )
     tem_documentos = document_checker(empresa["id"])
-    historico_recente = await conversation_loader(empresa["id"], usuario_id, 6)
+    faqs, historico_recente = await asyncio.gather(faqs_task, historico_task)
     decisao = decidir_resposta(
         pergunta=pergunta,
         empresa=empresa,
@@ -237,7 +271,7 @@ async def processar_pergunta(
         resposta_imediata = decisao.answer or ""
         conversation_id: int | None = None
         if return_context:
-            conversation_id = await _registrar_conversa_sincrona(
+            conversation_id = await _tentar_registrar_conversa_sincrona(
                 empresa["id"],
                 usuario_id,
                 pergunta,
@@ -276,57 +310,6 @@ async def processar_pergunta(
             pergunta,
             historico_recente,
         )
-
-        resposta_normalizada = _normalizar_texto(resposta)
-        if empresa.get("fallback_contato") and (
-            "nao tenho essa informacao" in resposta_normalizada
-            or "nao tenho documentos" in resposta_normalizada
-            or "nao estiver no contexto" in resposta_normalizada
-            or "nao encontrei informacao suficiente" in resposta_normalizada
-            or "nao tenho essa informacao confirmada" in resposta_normalizada
-        ):
-            resposta = (
-                f"{resposta}\n\n"
-                f"Se preferir, fale com a equipe em: {empresa['fallback_contato']}"
-            )
-
-        conversation_id = None
-        if return_context:
-            conversation_id = await _registrar_conversa_sincrona(
-                empresa["id"],
-                usuario_id,
-                pergunta,
-                resposta,
-                registrar_conversa_fn=registrar_conversa_fn,
-            )
-        else:
-            _registrar_conversa(
-                empresa["id"],
-                usuario_id,
-                pergunta,
-                resposta,
-                registrar_conversa_fn=registrar_conversa_fn,
-            )
-        registrar_metrica_atendimento(
-            empresa_id=empresa["id"],
-            decisao=decisao.kind,
-            total_segundos=perf_counter() - inicio,
-            usou_rag=True,
-            sucesso=True,
-        )
-        logger.info(
-            "Tempo atendimento empresa=%s usuario=%s total=%.2fs",
-            empresa["id"],
-            usuario_id,
-            perf_counter() - inicio,
-        )
-        if return_context:
-            return AgentResponse(
-                text=resposta,
-                conversation_id=conversation_id,
-                decision=decisao.kind,
-            )
-        return resposta
     except VectorStoreIncompatibilityError as exc:
         logger.warning("Base vetorial incompatível para a empresa %s: %s", empresa["id"], exc)
         registrar_metrica_atendimento(
@@ -373,3 +356,55 @@ async def processar_pergunta(
         if return_context:
             return AgentResponse(resposta_erro, decision="rag_error")
         return resposta_erro
+
+    resposta_normalizada = _normalizar_texto(resposta)
+    if empresa.get("fallback_contato") and (
+        "nao tenho essa informacao" in resposta_normalizada
+        or "nao tenho documentos" in resposta_normalizada
+        or "nao estiver no contexto" in resposta_normalizada
+        or "nao encontrei informacao suficiente" in resposta_normalizada
+        or "nao tenho essa informacao confirmada" in resposta_normalizada
+    ):
+        resposta = (
+            f"{resposta}\n\n"
+            f"Se preferir, fale com a equipe em: {empresa['fallback_contato']}"
+        )
+
+    conversation_id = None
+    if return_context:
+        conversation_id = await _tentar_registrar_conversa_sincrona(
+            empresa["id"],
+            usuario_id,
+            pergunta,
+            resposta,
+            registrar_conversa_fn=registrar_conversa_fn,
+        )
+    else:
+        _registrar_conversa(
+            empresa["id"],
+            usuario_id,
+            pergunta,
+            resposta,
+            registrar_conversa_fn=registrar_conversa_fn,
+        )
+
+    registrar_metrica_atendimento(
+        empresa_id=empresa["id"],
+        decisao=decisao.kind,
+        total_segundos=perf_counter() - inicio,
+        usou_rag=True,
+        sucesso=True,
+    )
+    logger.info(
+        "Tempo atendimento empresa=%s usuario=%s total=%.2fs",
+        empresa["id"],
+        usuario_id,
+        perf_counter() - inicio,
+    )
+    if return_context:
+        return AgentResponse(
+            text=resposta,
+            conversation_id=conversation_id,
+            decision=decisao.kind,
+        )
+    return resposta

@@ -69,3 +69,26 @@ class ProcessarPerguntaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sendo preparado", resultado.text)
         self.assertEqual(resultado.decision, "no_documents")
         rag_responder.assert_not_awaited()
+
+    async def test_rag_retorna_resposta_mesmo_se_registro_de_conversa_falhar(self):
+        rag_responder = AsyncMock(return_value="Detalhes do atendimento.")
+        registrar_conversa = AsyncMock(side_effect=RuntimeError("db offline"))
+
+        resultado = await processar_pergunta(
+            empresa=make_empresa(),
+            pergunta_bruta="Quais serviços vocês oferecem?",
+            usuario_id=123,
+            usuario_admin=False,
+            faq_loader=AsyncMock(return_value=[]),
+            conversation_loader=AsyncMock(return_value=[]),
+            registrar_conversa_fn=registrar_conversa,
+            document_checker=lambda _empresa_id: True,
+            rag_responder=rag_responder,
+            skip_rate_limit=True,
+            skip_validation=True,
+            return_context=True,
+        )
+
+        self.assertEqual(resultado.text, "Detalhes do atendimento.")
+        self.assertIsNone(resultado.conversation_id)
+        self.assertEqual(resultado.decision, "rag")

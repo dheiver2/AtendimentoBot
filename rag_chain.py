@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha1
 from time import perf_counter
 
@@ -13,7 +15,7 @@ from vector_store import buscar_contexto, obter_assinatura_contexto
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 logger = logging.getLogger(__name__)
-_DEFAULT_TIMEOUT_SECONDS = 18.0
+_DEFAULT_TIMEOUT_SECONDS = 12.0
 _RESPONSE_CACHE_TTL_SECONDS = 180.0
 _RESPONSE_CACHE_MAX_ITEMS = 256
 _MAX_HISTORY_TURNS = 4
@@ -62,6 +64,105 @@ PERGUNTA DO CLIENTE:
 {pergunta}
 
 RESPOSTA:"""
+
+
+# ── Prompt template cacheado (evita recriar a cada chamada) ──
+_CACHED_PROMPT: ChatPromptTemplate | None = None
+
+
+def _get_prompt() -> ChatPromptTemplate:
+    global _CACHED_PROMPT
+    if _CACHED_PROMPT is None:
+        _CACHED_PROMPT = ChatPromptTemplate.from_template(TEMPLATE)
+    return _CACHED_PROMPT
+
+
+# ── Modelos que suportam "thinking" e precisam de tratamento especial ──
+_THINKING_MODEL_PATTERNS = ("qwen3", "deepseek-r1", "o1", "o3")
+
+
+def _is_thinking_model(modelo: str) -> bool:
+    """Detecta se o modelo é do tipo 'thinking' (gera reasoning antes da resposta)."""
+    modelo_lower = modelo.lower()
+    return any(p in modelo_lower for p in _THINKING_MODEL_PATTERNS)
+
+
+# ── Pool de instâncias LLM cacheadas por configuração ──
+@lru_cache(maxsize=8)
+def _get_llm_cached(
+    modelo: str,
+    api_key: str,
+    max_tokens: int,
+    timeout: float,
+    fallback_models_key: str,
+    usar_fallback: bool,
+) -> ChatOpenAI:
+    """Retorna uma instância LLM reutilizável baseada nos parâmetros."""
+    extra_body: dict[str, object] = {}
+    if usar_fallback and fallback_models_key:
+        modelos = fallback_models_key.split("|")
+        extra_body = {
+            "models": modelos,
+            "route": "fallback",
+        }
+
+    # Para thinking models: desabilitar reasoning para respostas rápidas
+    # e usar max_completion_tokens para que reasoning não consuma o budget
+    is_thinking = _is_thinking_model(modelo)
+    if is_thinking:
+        extra_body["reasoning"] = {"effort": "none"}
+        logger.info(
+            "Modelo %s detectado como thinking model — reasoning desabilitado para performance.",
+            modelo,
+        )
+
+    return ChatOpenAI(
+        model=modelo,
+        api_key=api_key,
+        base_url=_OPENROUTER_BASE_URL,
+        temperature=0.2,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        max_retries=1,
+        extra_body=extra_body,
+    )
+
+
+def _resolver_configuracao_modelos() -> tuple[list[str], bool, float]:
+    """Resolve modelos, fallback e timeout a partir do ambiente (uma vez por chamada)."""
+    modelos_env = os.getenv("OPENROUTER_MODELS")
+    modelos = (
+        [m.strip() for m in modelos_env.split(",") if m.strip()]
+        if modelos_env
+        else _FALLBACK_MODELS
+    )
+
+    usar_fallback_raw = (os.getenv("OPENROUTER_ENABLE_FALLBACK") or "").strip().lower()
+    usar_fallback = (
+        usar_fallback_raw in {"1", "true", "yes", "on"}
+        if usar_fallback_raw
+        else len(modelos) > 1
+    )
+    timeout = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)))
+    return modelos, usar_fallback, timeout
+
+
+def _obter_llm(max_tokens: int) -> tuple[ChatOpenAI, list[str], bool, float]:
+    """Obtém a instância LLM (cacheada) com a configuração atual."""
+    modelos, usar_fallback, timeout = _resolver_configuracao_modelos()
+    api_key = os.getenv("OPENROUTER_API_KEY") or ""
+
+    fallback_key = "|".join(modelos) if usar_fallback and len(modelos) > 1 else ""
+
+    llm = _get_llm_cached(
+        modelo=modelos[0],
+        api_key=api_key,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        fallback_models_key=fallback_key,
+        usar_fallback=usar_fallback,
+    )
+    return llm, modelos, usar_fallback, timeout
 
 
 @dataclass
@@ -363,6 +464,12 @@ def _extrair_texto_resposta(resposta: object) -> str:
     raise ValueError("Resposta do modelo veio sem conteúdo textual utilizável.")
 
 
+async def _buscar_contexto_async(empresa_id: int, consulta: str, k: int) -> list[str]:
+    """Executa a busca vetorial em thread separada para não bloquear o event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, buscar_contexto, empresa_id, consulta, k)
+
+
 async def gerar_resposta(
     empresa_id: int,
     nome_empresa: str,
@@ -394,9 +501,9 @@ async def gerar_resposta(
         quantidade_chunks = 2
         max_tokens = max(max_tokens, 220)
 
-    # Busca contexto relevante nos documentos
+    # Busca contexto em thread separada (não bloqueia o event loop)
     inicio_busca = perf_counter()
-    chunks = buscar_contexto(empresa_id, consulta_recuperacao, k=quantidade_chunks)
+    chunks = await _buscar_contexto_async(empresa_id, consulta_recuperacao, k=quantidade_chunks)
     tempo_busca = perf_counter() - inicio_busca
 
     if not chunks:
@@ -412,41 +519,9 @@ async def gerar_resposta(
 
     contexto = "\n\n---\n\n".join(chunks)
 
-    prompt = ChatPromptTemplate.from_template(TEMPLATE)
-
-    # Usa variável de ambiente para sobrescrever modelos se necessário
-    modelos_env = os.getenv("OPENROUTER_MODELS")
-    modelos = (
-        [modelo.strip() for modelo in modelos_env.split(",") if modelo.strip()]
-        if modelos_env
-        else _FALLBACK_MODELS
-    )
-
-    usar_fallback_raw = (os.getenv("OPENROUTER_ENABLE_FALLBACK") or "").strip().lower()
-    usar_fallback = (
-        usar_fallback_raw in {"1", "true", "yes", "on"}
-        if usar_fallback_raw
-        else len(modelos) > 1
-    )
-    timeout = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)))
-
-    extra_body: dict[str, object] = {}
-    if usar_fallback and len(modelos) > 1:
-        extra_body = {
-            "models": modelos,
-            "route": "fallback",
-        }
-
-    llm = ChatOpenAI(
-        model=modelos[0],
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        base_url=_OPENROUTER_BASE_URL,
-        temperature=0.2,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        max_retries=0,
-        extra_body=extra_body,
-    )
+    # Prompt e LLM cacheados (reutilizados entre chamadas)
+    prompt = _get_prompt()
+    llm, modelos, usar_fallback, timeout = _obter_llm(max_tokens)
 
     chain = prompt | llm
 

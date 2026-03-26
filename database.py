@@ -716,7 +716,7 @@ async def listar_conversas_recentes(
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT *
+            SELECT id, mensagem_usuario, resposta_bot
             FROM conversas
             WHERE empresa_id = ?
               AND usuario_telegram_id = ?
