@@ -20,7 +20,12 @@ from handlers.common import (
 )
 from handlers.documents import _reindexar_base_empresa, _teclado_documentos
 from handlers.faq import _teclado_faqs
-from response_intelligence import decidir_resposta, detectar_pedido_humano, detectar_pergunta_horario
+from response_intelligence import (
+    decidir_resposta,
+    detectar_pedido_humano,
+    detectar_pergunta_baixa_informacao,
+    detectar_pergunta_horario,
+)
 
 
 class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
@@ -169,6 +174,11 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(detectar_pergunta_horario("Como funciona o atendimento?"))
         self.assertFalse(detectar_pergunta_horario("Quais regras de atendimento vocês seguem?"))
 
+    def test_detectar_pergunta_baixa_informacao_aberta(self):
+        self.assertTrue(detectar_pergunta_baixa_informacao("Queria tirar dúvidas"))
+        self.assertTrue(detectar_pergunta_baixa_informacao("gostaria de saber mais"))
+        self.assertFalse(detectar_pergunta_baixa_informacao("Quais planos vocês oferecem?"))
+
     def test_decidir_resposta_combina_horario_e_contato_humano(self):
         empresa = {
             "ativo": 1,
@@ -215,6 +225,27 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(decisao.kind, "rag")
         self.assertEqual(decisao.reason, "contextual_followup")
+
+    def test_decidir_resposta_pede_clarificacao_para_duvida_aberta(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "suporte@test.com",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "queria tirar dúvidas",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "clarify")
+        self.assertIn("Quais dúvidas você tem sobre a empresa", decisao.answer)
+        self.assertIn("suporte@test.com", decisao.answer)
 
     def test_formatar_resposta_pausado(self):
         empresa = {

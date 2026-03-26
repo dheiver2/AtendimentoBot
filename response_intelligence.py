@@ -64,6 +64,24 @@ _PERGUNTAS_BAIXA_INFORMACAO = {
     "info",
 }
 
+_PERGUNTAS_BAIXA_INFORMACAO_PATTERNS = (
+    re.compile(
+        r"^(?:quero|queria|gostaria(?:\s+de)?|preciso(?:\s+de)?)\s+"
+        r"(?:tirar|esclarecer|sanar)\s+(?:uma?s?\s+)?duvidas?[?!.,:;]*$"
+    ),
+    re.compile(
+        r"^(?:tenho|estou\s+com|to\s+com)\s+(?:uma?s?\s+)?duvidas?[?!.,:;]*$"
+    ),
+    re.compile(
+        r"^(?:quero|queria|gostaria(?:\s+de)?|preciso(?:\s+de)?)\s+"
+        r"(?:ajuda|informacao|informacoes|info)[?!.,:;]*$"
+    ),
+    re.compile(r"^(?:pode\s+)?me\s+ajudar[?!.,:;]*$"),
+    re.compile(
+        r"^(?:quero|queria|gostaria(?:\s+de)?|preciso(?:\s+de)?)\s+saber\s+mais[?!.,:;]*$"
+    ),
+)
+
 _CONTINUATION_PHRASES = {
     "sim",
     "nao",
@@ -243,6 +261,18 @@ def detectar_mensagem_trivial(pergunta: str) -> bool:
     return False
 
 
+def detectar_pergunta_baixa_informacao(pergunta: str) -> bool:
+    """Identifica pedidos abertos que ainda não trazem assunto suficiente."""
+    pergunta_normalizada = normalizar_texto(pergunta)
+    if pergunta_normalizada in _PERGUNTAS_BAIXA_INFORMACAO:
+        return True
+
+    return any(
+        pattern.fullmatch(pergunta_normalizada)
+        for pattern in _PERGUNTAS_BAIXA_INFORMACAO_PATTERNS
+    )
+
+
 def resposta_trivial(empresa: dict, pergunta: str) -> str:
     """Monta respostas curtas para mensagens sociais."""
     pergunta_normalizada = normalizar_texto(pergunta)
@@ -263,6 +293,34 @@ def resposta_trivial(empresa: dict, pergunta: str) -> str:
         return "Estou bem e pronto para ajudar. Qual é a sua dúvida?"
 
     return empresa.get("saudacao") or "Olá. Como posso ajudar?"
+
+
+def resposta_clarificacao(empresa: dict, pergunta: str) -> str:
+    """Monta respostas de esclarecimento para mensagens vagas."""
+    pergunta_normalizada = normalizar_texto(pergunta)
+
+    if "duvida" in pergunta_normalizada or "ajuda" in pergunta_normalizada:
+        resposta = (
+            "Claro. Quais dúvidas você tem sobre a empresa? "
+            "Posso ajudar com serviços, preços, horários, documentos e atendimento."
+        )
+    elif (
+        "informacao" in pergunta_normalizada
+        or "informacoes" in pergunta_normalizada
+        or "info" in pergunta_normalizada
+        or "saber mais" in pergunta_normalizada
+    ):
+        resposta = (
+            "Claro. Sobre o que você quer saber mais? "
+            "Posso ajudar com informações sobre serviços, preços, horários, documentos e atendimento."
+        )
+    else:
+        resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
+
+    if empresa.get("fallback_contato"):
+        resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"
+
+    return resposta
 
 
 def detectar_pedido_humano(pergunta: str) -> bool:
@@ -321,7 +379,7 @@ def deve_usar_rag(pergunta: str) -> bool:
     if detectar_mensagem_trivial(pergunta_normalizada):
         return False
 
-    if pergunta_normalizada in _PERGUNTAS_BAIXA_INFORMACAO:
+    if detectar_pergunta_baixa_informacao(pergunta_normalizada):
         return False
 
     palavras = pergunta_normalizada.split()
@@ -454,9 +512,12 @@ def decidir_resposta(
                 )
             return ResponseDecision("rag", reason="contextual_followup")
 
-        resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
-        if empresa.get("fallback_contato"):
-            resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"
+        if detectar_pergunta_baixa_informacao(pergunta):
+            resposta = resposta_clarificacao(empresa, pergunta)
+        else:
+            resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
+            if empresa.get("fallback_contato"):
+                resposta += f"\n\nSe preferir atendimento humano: {empresa['fallback_contato']}"
         return ResponseDecision("clarify", answer=resposta, reason="low_information_question")
 
     if not tem_documentos:

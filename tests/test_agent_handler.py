@@ -246,7 +246,7 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         mock_rag.assert_not_called()
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)
-    @patch("handlers.agent.validar_mensagem_usuario", return_value="me ajuda")
+    @patch("handlers.agent.validar_mensagem_usuario", return_value="queria tirar duvidas")
     @patch("handlers.agent.obter_empresa_do_usuario")
     @patch("handlers.agent.listar_faqs", return_value=[])
     @patch("handlers.agent.empresa_tem_documentos", return_value=True)
@@ -256,11 +256,11 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         from handlers.agent import interagir_com_agente
 
         mock_emp.return_value = self._empresa(fallback_contato="suporte@x.com")
-        update = make_update("me ajuda")
+        update = make_update("queria tirar duvidas")
         ctx = make_context()
         await interagir_com_agente(update, ctx)
         resposta = update.message.reply_text.call_args[0][0]
-        self.assertIn("pergunta mais específica", resposta)
+        self.assertIn("Quais dúvidas você tem sobre a empresa", resposta)
         self.assertIn("suporte@x.com", resposta)
         mock_rag.assert_not_called()
 
