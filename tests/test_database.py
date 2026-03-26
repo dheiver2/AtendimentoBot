@@ -257,6 +257,50 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(feedback["canal"], "telegram")
         self.assertEqual(feedback["avaliacao"], 1)
 
+    async def test_obtem_resumo_feedback_empresa(self):
+        empresa_id = await database.criar_empresa("Acme", 12345)
+        conversa_1 = await database.registrar_conversa(empresa_id, 999, "Oi", "Olá")
+        conversa_2 = await database.registrar_conversa(empresa_id, 999, "Prazo?", "3 dias")
+        conversa_3 = await database.registrar_conversa(empresa_id, 888, "Help", "Contato humano")
+
+        feedback_1 = await database.criar_feedback_resposta(
+            conversa_1,
+            empresa_id,
+            999,
+            canal="telegram",
+            resposta_bot="Olá",
+        )
+        feedback_2 = await database.criar_feedback_resposta(
+            conversa_2,
+            empresa_id,
+            999,
+            canal="telegram",
+            resposta_bot="3 dias",
+        )
+        await database.criar_feedback_resposta(
+            conversa_3,
+            empresa_id,
+            888,
+            canal="whatsapp",
+            resposta_bot="Contato humano",
+        )
+
+        await database.registrar_feedback_resposta(feedback_1, 1)
+        await database.registrar_feedback_resposta(feedback_2, -1)
+
+        resumo = await database.obter_resumo_feedback_empresa(empresa_id)
+
+        self.assertIsNotNone(resumo)
+        self.assertEqual(resumo["avaliados"], 2)
+        self.assertEqual(resumo["positivos"], 1)
+        self.assertEqual(resumo["negativos"], 1)
+        self.assertEqual(resumo["pendentes"], 1)
+        self.assertIn("telegram", resumo["por_canal"])
+        self.assertIn("whatsapp", resumo["por_canal"])
+        self.assertEqual(resumo["por_canal"]["telegram"]["positivos"], 1)
+        self.assertEqual(resumo["por_canal"]["telegram"]["negativos"], 1)
+        self.assertEqual(resumo["por_canal"]["whatsapp"]["pendentes"], 1)
+
     async def test_lista_conversas_recentes_filtra_usuario_e_ordena_cronologicamente(self):
         empresa_id = await database.criar_empresa("Acme", 12345)
 

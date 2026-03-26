@@ -27,10 +27,28 @@ class CmdPainelTests(unittest.IsolatedAsyncioTestCase):
         update = make_update()
         update.callback_query = None
         ctx = make_context()
-        await cmd_painel(update, ctx)
+        with patch(
+            "handlers.panel.obter_resumo_feedback_empresa",
+            new_callable=AsyncMock,
+            return_value={
+                "janela_horas": 24,
+                "avaliados": 3,
+                "positivos": 2,
+                "negativos": 1,
+                "pendentes": 1,
+                "taxa_positiva": 2 / 3,
+                "por_canal": {
+                    "telegram": {"positivos": 2, "negativos": 1, "pendentes": 0},
+                    "whatsapp": {"positivos": 0, "negativos": 0, "pendentes": 1},
+                },
+            },
+        ):
+            await cmd_painel(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("TestCorp", texto)
         self.assertIn("5", texto)
+        self.assertIn("Feedback recente", texto)
+        self.assertIn("telegram", texto)
 
     @patch("handlers.panel._obter_empresa_admin_ou_responder")
     @patch("handlers.panel.listar_documentos", new_callable=AsyncMock, return_value=[])
@@ -44,9 +62,15 @@ class CmdPainelTests(unittest.IsolatedAsyncioTestCase):
         update = make_update()
         update.callback_query = None
         ctx = make_context()
-        await cmd_painel(update, ctx)
+        with patch(
+            "handlers.panel.obter_resumo_feedback_empresa",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            await cmd_painel(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("Sem documentos", texto)
+        self.assertIn("ainda sem avaliações", texto)
 
 
 class CmdAjudaTests(unittest.IsolatedAsyncioTestCase):
@@ -172,10 +196,27 @@ class CmdStatusTests(unittest.IsolatedAsyncioTestCase):
         }
         update = make_update()
         ctx = make_context()
-        await cmd_status(update, ctx)
+        with patch(
+            "handlers.panel.obter_resumo_feedback_empresa",
+            new_callable=AsyncMock,
+            return_value={
+                "janela_horas": 24,
+                "avaliados": 4,
+                "positivos": 3,
+                "negativos": 1,
+                "pendentes": 0,
+                "taxa_positiva": 0.75,
+                "por_canal": {
+                    "telegram": {"positivos": 2, "negativos": 1, "pendentes": 0},
+                    "whatsapp": {"positivos": 1, "negativos": 0, "pendentes": 0},
+                },
+            },
+        ):
+            await cmd_status(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("CONFIGURADO", texto)
         self.assertIn("Métricas recentes", texto)
+        self.assertIn("Feedback recente", texto)
         self.assertIn("Top decisões", texto)
         mock_preview.assert_called_once()
 
@@ -191,10 +232,16 @@ class CmdStatusTests(unittest.IsolatedAsyncioTestCase):
         mock_admin.return_value = make_empresa()
         update = make_update()
         ctx = make_context()
-        await cmd_status(update, ctx)
+        with patch(
+            "handlers.panel.obter_resumo_feedback_empresa",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            await cmd_status(update, ctx)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("INCOMPLETO", texto)
         self.assertIn("ainda sem dados", texto)
+        self.assertIn("ainda sem avaliações", texto)
 
 
 class PainelCallbacksTests(unittest.IsolatedAsyncioTestCase):

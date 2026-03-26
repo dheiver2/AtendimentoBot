@@ -10,6 +10,7 @@ from database import (
     contar_clientes_empresa,
     listar_documentos,
     listar_faqs,
+    obter_resumo_feedback_empresa,
     obter_empresa_do_cliente,
     obter_empresa_por_admin,
 )
@@ -61,6 +62,31 @@ async def _formatar_bloco_metricas(empresa_id: int) -> str:
     return "\n".join(linhas)
 
 
+async def _formatar_bloco_feedback(empresa_id: int) -> str:
+    """Resume o feedback recente dos usuarios para o admin."""
+    resumo = await obter_resumo_feedback_empresa(empresa_id)
+    if not resumo:
+        return "👍 Feedback recente: ainda sem avaliações registradas."
+
+    linhas = [
+        (
+            f"👍 Feedback recente ({resumo['janela_horas']}h): "
+            f"{resumo['avaliados']} avaliados | "
+            f"{resumo['taxa_positiva'] * 100:.0f}% positivo | "
+            f"{resumo['pendentes']} pendentes"
+        )
+    ]
+    canais = []
+    for canal, dados in sorted(resumo["por_canal"].items()):
+        trecho = f"{canal} {dados['positivos']}👍/{dados['negativos']}👎"
+        if dados["pendentes"]:
+            trecho += f"/{dados['pendentes']} pend."
+        canais.append(trecho)
+    if canais:
+        linhas.append("Canais: " + ", ".join(canais))
+    return "\n".join(linhas)
+
+
 async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra o painel de gerenciamento."""
     mensagem = update.effective_message
@@ -91,6 +117,7 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     atendimento_texto = "Ativo" if agente_ativo else "Pausado"
     template = obter_template_instrucao(empresa.get("instruction_template_key"))
     template_texto = template.nome if template else "Personalizado"
+    bloco_feedback = await _formatar_bloco_feedback(empresa["id"])
 
     texto = (
         f"📊 Painel — {empresa['nome']}\n\n"
@@ -105,6 +132,7 @@ async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❔ FAQs: {len(faqs)}\n"
         f"📄 Documentos: {len(docs)}\n"
         f"{status_emoji} Status: {status_texto}\n\n"
+        f"{bloco_feedback}\n\n"
         f"Use os botões abaixo ou o Menu do Telegram para navegar.\n\n"
         f"Você pode enviar documentos diretamente neste chat, testar o agente com perguntas e usar /link para compartilhar com clientes."
     )
@@ -239,6 +267,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     atendimento_texto = "Ativo" if bool(empresa.get("ativo", 1)) else "Pausado"
     horario_texto = empresa.get("horario_atendimento") or "Não configurado"
     fallback_texto = empresa.get("fallback_contato") or "Não configurado"
+    bloco_metricas = await _formatar_bloco_metricas(empresa["id"])
+    bloco_feedback = await _formatar_bloco_feedback(empresa["id"])
 
     if tem_docs:
         texto = (
@@ -252,7 +282,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Clientes vinculados: {total_clientes}\n"
             f"FAQs: {len(faqs)}\n"
             f"Documentos indexados: {len(docs)}\n\n"
-            f"{await _formatar_bloco_metricas(empresa['id'])}\n\n"
+            f"{bloco_metricas}\n"
+            f"{bloco_feedback}\n\n"
             f"Seu agente já pode ser testado neste chat e compartilhado com /link."
         )
     else:
@@ -266,7 +297,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Clientes vinculados: {total_clientes}\n"
             f"FAQs: {len(faqs)}\n"
             f"Nenhum documento carregado.\n\n"
-            f"{await _formatar_bloco_metricas(empresa['id'])}\n\n"
+            f"{bloco_metricas}\n"
+            f"{bloco_feedback}\n\n"
             f"Envie documentos neste chat ou use /upload para concluir a configuração."
         )
     await mensagem.reply_text(texto)

@@ -125,6 +125,17 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(resposta)
 
+    def test_busca_resposta_faq_retorna_none_quando_match_e_ambiguo(self):
+        resposta = _buscar_resposta_faq(
+            "qual o prazo",
+            [
+                {"pergunta": "Qual o prazo de entrega?", "resposta": "3 dias úteis"},
+                {"pergunta": "Qual o prazo de produção?", "resposta": "7 dias úteis"},
+            ],
+        )
+
+        self.assertIsNone(resposta)
+
     def test_teclado_documentos_renderiza_acoes_por_arquivo(self):
         teclado = _teclado_documentos(
             [
@@ -246,6 +257,110 @@ class HandlersHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decisao.kind, "clarify")
         self.assertIn("Quais dúvidas você tem sobre a empresa", decisao.answer)
         self.assertIn("suporte@test.com", decisao.answer)
+
+    def test_decidir_resposta_faq_ambigua_pede_clarificacao_guiada(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "qual o prazo",
+            empresa,
+            [
+                {"pergunta": "Qual o prazo de entrega?", "resposta": "3 dias úteis"},
+                {"pergunta": "Qual o prazo de produção?", "resposta": "7 dias úteis"},
+            ],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "clarify")
+        self.assertIn("Prazo de qual entrega", decisao.answer)
+
+    def test_decidir_resposta_humano_sem_fallback_explica_falta_configuracao(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "quero falar com atendente",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "human")
+        self.assertIn("ainda não informou um contato humano", decisao.answer)
+
+    def test_decidir_resposta_horario_sem_configuracao_explica_falta_configuracao(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "qual o horario",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "hours")
+        self.assertIn("ainda não informou o horário", decisao.answer)
+
+    def test_decidir_resposta_preco_generico_pede_clarificacao_concreta(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "",
+            "saudacao": "Oi",
+        }
+        decisao = decidir_resposta(
+            "qual o preco",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "clarify")
+        self.assertIn("De qual produto, plano ou serviço", decisao.answer)
+
+    def test_decidir_resposta_smalltalk_nao_reutiliza_saudacao_da_empresa(self):
+        empresa = {
+            "ativo": 1,
+            "horario_atendimento": "",
+            "fallback_contato": "",
+            "saudacao": "Bem-vindo à Empresa XPTO. Sou o atendente oficial.",
+        }
+        decisao = decidir_resposta(
+            "oi",
+            empresa,
+            [],
+            usuario_admin=False,
+            tem_documentos=True,
+            resposta_pausado="pausado",
+            resposta_sem_base="sem base",
+        )
+
+        self.assertEqual(decisao.kind, "trivial")
+        self.assertIn("Como posso ajudar", decisao.answer)
+        self.assertNotEqual(decisao.answer, empresa["saudacao"])
 
     def test_formatar_resposta_pausado(self):
         empresa = {

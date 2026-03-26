@@ -804,6 +804,66 @@ async def obter_feedback_resposta(feedback_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def obter_resumo_feedback_empresa(empresa_id: int, janela_horas: int = 24) -> dict | None:
+    """Agrupa feedbacks recentes da empresa para o painel operacional."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT
+                canal,
+                COUNT(*) AS total,
+                SUM(CASE WHEN avaliacao = 1 THEN 1 ELSE 0 END) AS positivos,
+                SUM(CASE WHEN avaliacao = -1 THEN 1 ELSE 0 END) AS negativos,
+                SUM(CASE WHEN avaliacao IS NULL THEN 1 ELSE 0 END) AS pendentes
+            FROM feedback_respostas
+            WHERE empresa_id = ?
+              AND criado_em >= datetime('now', ?)
+            GROUP BY canal
+            ORDER BY canal ASC
+            """,
+            (empresa_id, f"-{janela_horas} hours"),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    if not rows:
+        return None
+
+    por_canal: dict[str, dict[str, int]] = {}
+    total = positivos = negativos = pendentes = 0
+    for row in rows:
+        canal = str(row["canal"] or "desconhecido")
+        canal_total = int(row["total"] or 0)
+        canal_positivos = int(row["positivos"] or 0)
+        canal_negativos = int(row["negativos"] or 0)
+        canal_pendentes = int(row["pendentes"] or 0)
+        canal_avaliados = canal_positivos + canal_negativos
+
+        por_canal[canal] = {
+            "total": canal_total,
+            "avaliados": canal_avaliados,
+            "positivos": canal_positivos,
+            "negativos": canal_negativos,
+            "pendentes": canal_pendentes,
+        }
+        total += canal_total
+        positivos += canal_positivos
+        negativos += canal_negativos
+        pendentes += canal_pendentes
+
+    avaliados = positivos + negativos
+    return {
+        "janela_horas": janela_horas,
+        "total": total,
+        "avaliados": avaliados,
+        "positivos": positivos,
+        "negativos": negativos,
+        "pendentes": pendentes,
+        "taxa_positiva": (positivos / avaliados) if avaliados else 0.0,
+        "por_canal": por_canal,
+    }
+
+
 async def salvar_sessao_whatsapp(
     sender: str,
     *,

@@ -17,6 +17,27 @@ DecisionKind = Literal[
     "rag",
 ]
 
+_FAQ_STOPWORDS = {
+    "a",
+    "as",
+    "com",
+    "da",
+    "das",
+    "de",
+    "do",
+    "dos",
+    "e",
+    "o",
+    "os",
+    "para",
+    "por",
+    "qual",
+    "quais",
+    "que",
+    "um",
+    "uma",
+}
+
 _MENSAGENS_TRIVIAIS = {
     "oi",
     "ola",
@@ -62,6 +83,12 @@ _PERGUNTAS_BAIXA_INFORMACAO = {
     "informacao",
     "informação",
     "info",
+    "preco",
+    "preço",
+    "valor",
+    "prazo",
+    "documento",
+    "documentos",
 }
 
 _PERGUNTAS_BAIXA_INFORMACAO_PATTERNS = (
@@ -80,6 +107,11 @@ _PERGUNTAS_BAIXA_INFORMACAO_PATTERNS = (
     re.compile(
         r"^(?:quero|queria|gostaria(?:\s+de)?|preciso(?:\s+de)?)\s+saber\s+mais[?!.,:;]*$"
     ),
+    re.compile(r"^(?:qual(?:\s+e)?\s+o\s+)?(?:preco|valor)[?!.,:;]*$"),
+    re.compile(r"^quanto\s+custa[?!.,:;]*$"),
+    re.compile(r"^(?:qual(?:\s+e)?\s+o\s+)?prazo[?!.,:;]*$"),
+    re.compile(r"^(?:quais?\s+(?:sao\s+os\s+)?)?documentos[?!.,:;]*$"),
+    re.compile(r"^como\s+funciona(?:\s+isso)?[?!.,:;]*$"),
 )
 
 _CONTINUATION_PHRASES = {
@@ -202,6 +234,12 @@ class ResponseDecision:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class FaqResolution:
+    answer: str | None = None
+    ambiguous: bool = False
+
+
 def normalizar_texto(texto: str) -> str:
     """Normaliza texto para comparações simples."""
     texto = unicodedata.normalize("NFKD", texto)
@@ -215,11 +253,22 @@ def _obter_campo_textual(item: Mapping[str, object], campo: str) -> str:
     return valor if isinstance(valor, str) else ""
 
 
-def buscar_resposta_faq(pergunta: str, faqs: Sequence[Mapping[str, object]]) -> str | None:
-    """Busca a resposta mais provável entre FAQs cadastradas."""
+def _tokens_relevantes(texto: str) -> set[str]:
+    return {
+        token
+        for token in normalizar_texto(texto).split()
+        if token and len(token) > 2 and token not in _FAQ_STOPWORDS
+    }
+
+
+def _resolver_resposta_faq(
+    pergunta: str,
+    faqs: Sequence[Mapping[str, object]],
+) -> FaqResolution:
+    """Resolve FAQ com guarda contra matches ambíguos ou fracos."""
     pergunta_normalizada = normalizar_texto(pergunta)
-    melhor_resposta: str | None = None
-    melhor_score = 0.0
+    tokens_pergunta = _tokens_relevantes(pergunta_normalizada)
+    candidatos: list[tuple[float, float, str, str]] = []
 
     for faq in faqs:
         pergunta_faq = normalizar_texto(_obter_campo_textual(faq, "pergunta"))
@@ -230,22 +279,57 @@ def buscar_resposta_faq(pergunta: str, faqs: Sequence[Mapping[str, object]]) -> 
         if not resposta_faq:
             continue
 
-        if (
-            pergunta_normalizada == pergunta_faq
-            or pergunta_normalizada in pergunta_faq
-            or pergunta_faq in pergunta_normalizada
-        ):
-            return resposta_faq
+        if pergunta_normalizada == pergunta_faq:
+            return FaqResolution(answer=resposta_faq)
+
+        tokens_faq = _tokens_relevantes(pergunta_faq)
+        intersecao = tokens_pergunta & tokens_faq
+        cobertura_pergunta = (
+            len(intersecao) / len(tokens_pergunta)
+            if tokens_pergunta
+            else 0.0
+        )
+        contains = bool(
+            pergunta_normalizada
+            and (
+                pergunta_normalizada in pergunta_faq
+                or pergunta_faq in pergunta_normalizada
+            )
+        )
 
         score = SequenceMatcher(None, pergunta_normalizada, pergunta_faq).ratio()
-        if score > melhor_score:
-            melhor_score = score
-            melhor_resposta = resposta_faq
+        score_efetivo = score
+        if contains and cobertura_pergunta >= 0.5:
+            score_efetivo = max(score_efetivo, 0.94)
+        if cobertura_pergunta:
+            score_efetivo = max(score_efetivo, 0.52 + (cobertura_pergunta * 0.38))
 
-    if melhor_score >= 0.82:
-        return melhor_resposta
+        candidatos.append((score_efetivo, cobertura_pergunta, pergunta_faq, resposta_faq))
 
-    return None
+    if not candidatos:
+        return FaqResolution()
+
+    candidatos.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    melhor_score, melhor_cobertura, _melhor_pergunta, melhor_resposta = candidatos[0]
+    if melhor_score < 0.84 or (tokens_pergunta and melhor_cobertura < 0.5):
+        return FaqResolution()
+
+    if len(candidatos) > 1:
+        segundo_score, segundo_cobertura, _segundo_pergunta, segunda_resposta = candidatos[1]
+        if (
+            segunda_resposta != melhor_resposta
+            and segundo_score >= 0.82
+            and segundo_cobertura >= 0.5
+            and (melhor_score - segundo_score) < 0.05
+        ):
+            return FaqResolution(ambiguous=True)
+
+    return FaqResolution(answer=melhor_resposta)
+
+
+def buscar_resposta_faq(pergunta: str, faqs: Sequence[Mapping[str, object]]) -> str | None:
+    """Busca a resposta mais provável entre FAQs cadastradas."""
+    return _resolver_resposta_faq(pergunta, faqs).answer
 
 
 def detectar_mensagem_trivial(pergunta: str) -> bool:
@@ -292,17 +376,55 @@ def resposta_trivial(empresa: dict, pergunta: str) -> str:
     ):
         return "Estou bem e pronto para ajudar. Qual é a sua dúvida?"
 
-    return empresa.get("saudacao") or "Olá. Como posso ajudar?"
+    if "boa tarde" in pergunta_normalizada:
+        return "Boa tarde. Como posso ajudar?"
+    if "boa noite" in pergunta_normalizada:
+        return "Boa noite. Como posso ajudar?"
+    if "bom dia" in pergunta_normalizada:
+        return "Bom dia. Como posso ajudar?"
+
+    return "Olá. Como posso ajudar?"
+
+
+def _pergunta_baixa_informacao_exige_base(pergunta: str) -> bool:
+    pergunta_normalizada = normalizar_texto(pergunta)
+    return any(
+        termo in pergunta_normalizada
+        for termo in (
+            "preco",
+            "preço",
+            "valor",
+            "custa",
+            "prazo",
+            "entrega",
+            "documento",
+            "documentos",
+            "plano",
+            "produto",
+            "servico",
+            "serviço",
+            "funciona",
+        )
+    )
 
 
 def resposta_clarificacao(empresa: dict, pergunta: str) -> str:
     """Monta respostas de esclarecimento para mensagens vagas."""
     pergunta_normalizada = normalizar_texto(pergunta)
+    resposta: str | None = None
 
-    if "duvida" in pergunta_normalizada or "ajuda" in pergunta_normalizada:
+    if any(token in pergunta_normalizada for token in ("preco", "preço", "valor", "custa")):
+        resposta = "Claro. De qual produto, plano ou serviço você quer saber o preço?"
+    elif any(token in pergunta_normalizada for token in ("prazo", "entrega")):
+        resposta = "Claro. Prazo de qual entrega, serviço ou processo você quer confirmar?"
+    elif "documento" in pergunta_normalizada:
+        resposta = "Claro. Você precisa saber quais documentos para qual serviço, cadastro ou processo?"
+    elif any(token in pergunta_normalizada for token in ("plano", "produto", "servico", "serviço", "funciona")):
+        resposta = "Claro. Qual plano, produto ou serviço você quer que eu detalhe?"
+    elif "duvida" in pergunta_normalizada or "ajuda" in pergunta_normalizada:
         resposta = (
             "Claro. Quais dúvidas você tem sobre a empresa? "
-            "Posso ajudar com serviços, preços, horários, documentos e atendimento."
+            "Posso ajudar com serviços, preços, prazos, documentos, horários e atendimento."
         )
     elif (
         "informacao" in pergunta_normalizada
@@ -312,9 +434,9 @@ def resposta_clarificacao(empresa: dict, pergunta: str) -> str:
     ):
         resposta = (
             "Claro. Sobre o que você quer saber mais? "
-            "Posso ajudar com informações sobre serviços, preços, horários, documentos e atendimento."
+            "Se puder, diga o serviço, produto, prazo, documento ou regra que você quer consultar."
         )
-    else:
+    if resposta is None:
         resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
 
     if empresa.get("fallback_contato"):
@@ -468,36 +590,72 @@ def decidir_resposta(
     if not bool(empresa.get("ativo", 1)):
         return ResponseDecision("paused", answer=resposta_pausado, reason="agent_paused")
 
-    solicitou_humano = bool(empresa.get("fallback_contato")) and detectar_pedido_humano(pergunta)
-    solicitou_horario = bool(empresa.get("horario_atendimento")) and detectar_pergunta_horario(pergunta)
+    pediu_humano = detectar_pedido_humano(pergunta)
+    pediu_horario = detectar_pergunta_horario(pergunta)
+    tem_fallback = bool(empresa.get("fallback_contato"))
+    tem_horario = bool(empresa.get("horario_atendimento"))
 
-    if solicitou_humano and solicitou_horario:
+    if pediu_humano and pediu_horario:
+        linhas: list[str] = []
+        if tem_horario:
+            linhas.append(f"🕒 Horário de atendimento: {empresa['horario_atendimento']}")
+        elif usuario_admin:
+            linhas.append("🕒 Você ainda não configurou o horário de atendimento. Use /horario para definir.")
+        else:
+            linhas.append("🕒 Este atendimento ainda não informou o horário de atendimento.")
+
+        if tem_fallback:
+            linhas.append(f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}")
+        elif usuario_admin:
+            linhas.append("🆘 Você ainda não configurou um contato humano. Use /fallback para definir.")
+        else:
+            linhas.append("🆘 Este atendimento ainda não informou um contato humano para este canal.")
+
         return ResponseDecision(
             "human",
-            answer=(
-                f"🕒 Horário de atendimento: {empresa['horario_atendimento']}\n"
-                f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}"
-            ),
+            answer="\n".join(linhas),
             reason="hours_and_human_request",
         )
 
-    if solicitou_humano:
+    if pediu_humano:
         return ResponseDecision(
             "human",
-            answer=f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}",
-            reason="explicit_human_request",
+            answer=(
+                f"🆘 Para atendimento humano, use este contato: {empresa['fallback_contato']}"
+                if tem_fallback
+                else (
+                    "🆘 Você ainda não configurou um contato humano. Use /fallback para definir."
+                    if usuario_admin
+                    else "🆘 Este atendimento ainda não informou um contato humano para este canal."
+                )
+            ),
+            reason="explicit_human_request" if tem_fallback else "human_request_missing_config",
         )
 
-    if solicitou_horario:
+    if pediu_horario:
         return ResponseDecision(
             "hours",
-            answer=f"🕒 Horário de atendimento: {empresa['horario_atendimento']}",
-            reason="hours_request",
+            answer=(
+                f"🕒 Horário de atendimento: {empresa['horario_atendimento']}"
+                if tem_horario
+                else (
+                    "🕒 Você ainda não configurou o horário de atendimento. Use /horario para definir."
+                    if usuario_admin
+                    else "🕒 Este atendimento ainda não informou o horário de atendimento."
+                )
+            ),
+            reason="hours_request" if tem_horario else "hours_missing_config",
         )
 
-    resposta_faq = buscar_resposta_faq(pergunta, faqs)
-    if resposta_faq:
-        return ResponseDecision("faq", answer=resposta_faq, reason="faq_match")
+    resolucao_faq = _resolver_resposta_faq(pergunta, faqs)
+    if resolucao_faq.answer:
+        return ResponseDecision("faq", answer=resolucao_faq.answer, reason="faq_match")
+    if resolucao_faq.ambiguous:
+        return ResponseDecision(
+            "clarify",
+            answer=resposta_clarificacao(empresa, pergunta),
+            reason="faq_ambiguous",
+        )
 
     if detectar_mensagem_trivial(pergunta):
         return ResponseDecision("trivial", answer=resposta_trivial(empresa, pergunta), reason="smalltalk")
@@ -513,6 +671,12 @@ def decidir_resposta(
             return ResponseDecision("rag", reason="contextual_followup")
 
         if detectar_pergunta_baixa_informacao(pergunta):
+            if not tem_documentos and _pergunta_baixa_informacao_exige_base(pergunta):
+                return ResponseDecision(
+                    "no_documents",
+                    answer=resposta_sem_base,
+                    reason="knowledge_base_missing_admin" if usuario_admin else "knowledge_base_missing_client",
+                )
             resposta = resposta_clarificacao(empresa, pergunta)
         else:
             resposta = "Posso ajudar melhor se você mandar uma pergunta mais específica."
