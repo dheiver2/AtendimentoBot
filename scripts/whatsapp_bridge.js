@@ -67,6 +67,8 @@ const statusPath = normalizePath(process.env.WHATSAPP_WEB_CLIENT_HEALTH_PATH, "/
 const clientId = String(process.env.WHATSAPP_WEB_CLIENT_ID || "atendimento-bot").trim() || "atendimento-bot";
 const sessionDir = resolvePath(process.env.WHATSAPP_WEB_SESSION_DIR, DEFAULT_SESSION_DIR);
 const forceNewQr = isTruthy(process.env.WHATSAPP_WEB_FORCE_NEW_QR);
+const bridgeHealthUrl = new URL("/health", `http://${bridgeHost}:${bridgePort}${bridgePath}`).toString();
+const BRIDGE_HEALTH_TIMEOUT_MS = 5000;
 
 if (forceNewQr) {
   const clearedSessionPath = clearLocalAuthSession(sessionDir, clientId, fs);
@@ -180,6 +182,28 @@ async function buildPayload(message) {
   payload.file_name = String(media.filename || "");
   payload.media_base64 = String(media.data || "");
   return payload;
+}
+
+async function checkPythonBridgeHealth() {
+  try {
+    const response = await fetch(bridgeHealthUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(BRIDGE_HEALTH_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      lastError = `Bridge Python indisponivel em ${bridgeHealthUrl} (HTTP ${response.status}).`;
+      return false;
+    }
+
+    lastError = "";
+    return true;
+  } catch (error) {
+    lastError = (
+      `Bridge Python indisponivel em ${bridgeHealthUrl}: `
+      + `${error instanceof Error ? error.message : String(error)}`
+    );
+    return false;
+  }
 }
 
 async function sendActions(message, actions) {
@@ -311,8 +335,23 @@ client.on("authenticated", () => {
 client.on("ready", () => {
   state = "ready";
   lastReadyAt = new Date().toISOString();
-  lastError = "";
-  console.log("WhatsApp pronto para atender mensagens.");
+  void checkPythonBridgeHealth()
+    .then((bridgeReady) => {
+      if (bridgeReady) {
+        console.log("WhatsApp pronto para atender mensagens.");
+        return;
+      }
+
+      console.error(
+        "WhatsApp conectado, mas o bridge Python nao respondeu. "
+        + "As mensagens nao serao atendidas ate o main ficar ativo.",
+      );
+      console.error(`Verifique o outro terminal do main e o endpoint ${bridgeHealthUrl}.`);
+    })
+    .catch((error) => {
+      lastError = error instanceof Error ? error.message : String(error);
+      console.error("Falha ao validar o bridge Python apos conectar o WhatsApp:", error);
+    });
 });
 
 client.on("auth_failure", (message) => {

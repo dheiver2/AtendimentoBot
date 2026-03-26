@@ -1,5 +1,6 @@
 """Testes para main.py — error_handler e configuração."""
 import asyncio
+import sqlite3
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -104,6 +105,29 @@ class MainFunctionTests(unittest.TestCase):
         server.start_background.assert_called_once()
         mock_launch.assert_called_once_with(settings)
         server.shutdown.assert_called_once()
+
+    @patch("main.WhatsAppWebSettings.from_env")
+    @patch(
+        "main.os.getenv",
+        side_effect=lambda k, d=None: {
+            "OPENROUTER_API_KEY": "router-key",
+            "TELEGRAM_BOT_TOKEN": "fake-token",
+        }.get(k, d),
+    )
+    def test_banco_corrompido_gera_erro_claro(self, mock_getenv, mock_whatsapp_settings):
+        from main import main
+
+        mock_whatsapp_settings.return_value.enabled = False
+        with patch(
+            "main.init_db",
+            new_callable=AsyncMock,
+            side_effect=sqlite3.DatabaseError("database disk image is malformed"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                main()
+
+        self.assertIn("corrompido", str(ctx.exception).lower())
+        self.assertIn("bot.db", str(ctx.exception))
 
 
 class PostInitTests(unittest.IsolatedAsyncioTestCase):

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import sqlite3
 import time
 
 from dotenv import load_dotenv
@@ -9,7 +10,7 @@ from telegram import Update
 from telegram.error import Conflict
 from telegram.ext import ApplicationBuilder, ContextTypes
 
-from config import BOT_VERSION, BUNDLED_ENV_PATH, ENV_PATH
+from config import BOT_VERSION, BUNDLED_ENV_PATH, DB_PATH, ENV_PATH
 from database import init_db, listar_ids_admins, listar_ids_clientes
 from handlers import get_handlers
 from telegram_commands import configurar_menu_nativo_padrao, sincronizar_comandos_existentes
@@ -35,6 +36,22 @@ def _create_main_event_loop() -> asyncio.AbstractEventLoop:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     return loop
+
+
+def _init_db_or_raise(loop: asyncio.AbstractEventLoop) -> None:
+    """Inicializa o banco e promove erros de corrupção com contexto útil."""
+    try:
+        loop.run_until_complete(init_db())
+    except sqlite3.DatabaseError as exc:
+        mensagem = str(exc)
+        if "malformed" in mensagem.lower():
+            erro = (
+                f"Banco de dados corrompido em {DB_PATH}: {mensagem}. "
+                "Restaure um backup ou repare o arquivo antes de iniciar o bot."
+            )
+            logger.critical(erro, exc_info=True)
+            raise RuntimeError(erro) from exc
+        raise
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -98,7 +115,7 @@ def main():
     whatsapp_server: WhatsAppWebBridgeServer | None = None
 
     try:
-        main_event_loop.run_until_complete(init_db())
+        _init_db_or_raise(main_event_loop)
 
         if whatsapp_settings.enabled:
             whatsapp_server = WhatsAppWebBridgeServer(whatsapp_settings)
