@@ -303,10 +303,6 @@ def detectar_continuacao_contextual(
     if not palavras or len(palavras) > 6:
         return False
 
-    ultimo_turno = historico_recente[-1]
-    ultima_resposta = _obter_campo_textual(ultimo_turno, "resposta_bot")
-    ultima_resposta_normalizada = normalizar_texto(ultima_resposta)
-
     if pergunta_normalizada in _CONTINUATION_PHRASES:
         return True
 
@@ -314,26 +310,6 @@ def detectar_continuacao_contextual(
         return True
 
     if len(palavras) <= 4 and any(token in palavras for token in _CONTINUATION_REFERENCE_TOKENS):
-        return True
-
-    if (
-        len(palavras) <= 4
-        and ultima_resposta
-        and (
-            "?" in ultima_resposta
-            or any(
-                gatilho in ultima_resposta_normalizada
-                for gatilho in (
-                    "qual",
-                    "quais",
-                    "quer",
-                    "prefere",
-                    "me informe",
-                    "me diga",
-                )
-            )
-        )
-    ):
         return True
 
     return False
