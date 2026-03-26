@@ -170,8 +170,8 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "- cliente: usa /empresas ou o link enviado pelo admin para conversar\n\n"
             "Use /meuid para descobrir seu ID do Telegram.\n"
             + (
-                "Seu usuário está autorizado como admin. Use /registrar para cadastrar uma empresa. "
-                "Se quiser escolher um atendimento como cliente, use /start ou /empresas."
+                "Seu usuário está autorizado como admin. Use /start para cadastrar uma empresa. "
+                "Se quiser escolher um atendimento como cliente, use /empresas."
                 if pode_iniciar_admin_sem_link
                 else "Se você recebeu um link de admin, abra-o para liberar a gestão. "
                 "Se é cliente, use /start, /empresas ou o link enviado pelo atendimento."

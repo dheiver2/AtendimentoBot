@@ -5,7 +5,7 @@ Bot de atendimento ao cliente com RAG (Retrieval-Augmented Generation), onboardi
 Perfis atuais:
 
 - **admin**: configura a empresa, o agente, os documentos e gera o link de atendimento
-- **cliente**: entra pelo link enviado pelo admin e usa o bot apenas para conversar
+- **cliente**: entra pelo link enviado pelo admin ou escolhe a empresa com `/empresas` e usa o bot apenas para conversar
 
 ## Documentação para usuários
 

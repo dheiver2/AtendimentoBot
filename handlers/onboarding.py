@@ -64,7 +64,7 @@ def _texto_selecao_empresas(
         linhas.append("Toque em uma das opções abaixo para vincular este chat ao atendimento correto.")
 
     if admin_pode_registrar:
-        linhas.append("Se você é admin e quer cadastrar uma nova empresa, use /registrar.")
+        linhas.append("Se você é admin e quer cadastrar uma nova empresa, use /start ou /registrar.")
 
     return "\n\n".join(linhas)
 
@@ -229,24 +229,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["identidade_visual_enviada"] = True
         return ConversationHandler.END
 
+    if _pode_iniciar_admin_telegram_sem_link(user_id):
+        await _sincronizar_comandos_do_chat(update, context, "padrao")
+        return await _iniciar_onboarding(update, context)
+
     if empresas_disponiveis:
         await _mostrar_seletor_empresas(update, context, empresas_disponiveis)
         return ConversationHandler.END
 
     await _sincronizar_comandos_do_chat(update, context, "padrao")
-    if not _pode_iniciar_admin_telegram_sem_link(user_id):
-        await mensagem.reply_text(
-            "👋 Este usuário ainda não foi vinculado a um atendimento.\n"
-            "Se você recebeu um link de admin, abra-o para liberar a gestão. "
-            "Se é cliente, use /empresas ou abra o link enviado pelo atendimento."
-        )
-        return ConversationHandler.END
-
-    return await _iniciar_onboarding(update, context)
+    await mensagem.reply_text(
+        "👋 Este usuário ainda não foi vinculado a um atendimento.\n"
+        "Se você recebeu um link de admin, abra-o para liberar a gestão. "
+        "Se é cliente, use /empresas ou abra o link enviado pelo atendimento."
+    )
+    return ConversationHandler.END
 
 
 async def cmd_empresas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Abre o seletor de empresas para clientes no Telegram."""
+    _limpar_estado_usuario(context)
     user_id = update.effective_user.id
     empresa_admin = await obter_empresa_por_admin(user_id)
     if empresa_admin:
@@ -254,21 +256,21 @@ async def cmd_empresas(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔒 Admins gerenciam a própria empresa com /painel.\n"
             "O seletor /empresas é destinado aos clientes."
         )
-        return
+        return ConversationHandler.END
 
     empresas = await listar_empresas()
     if not empresas:
         if _pode_iniciar_admin_telegram_sem_link(user_id):
             await update.effective_message.reply_text(
                 "👋 Ainda não há empresas cadastradas neste bot.\n"
-                "Use /registrar para criar a primeira empresa."
+                "Use /start ou /registrar para criar a primeira empresa."
             )
         else:
             await update.effective_message.reply_text(
                 "👋 Ainda não há empresas cadastradas neste bot.\n"
                 "Aguarde o administrador concluir a configuração."
             )
-        return
+        return ConversationHandler.END
 
     empresa_cliente = await obter_empresa_do_cliente(user_id)
     await _mostrar_seletor_empresas(
@@ -277,6 +279,7 @@ async def cmd_empresas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         empresas,
         empresa_atual=empresa_cliente,
     )
+    return ConversationHandler.END
 
 
 async def selecionar_empresa_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

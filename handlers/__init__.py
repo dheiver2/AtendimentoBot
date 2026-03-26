@@ -143,7 +143,10 @@ def get_handlers() -> list:
                 CallbackQueryHandler(reset_cancelar_callback, pattern="^reset_cancelar$"),
             ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar_registro)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar_registro),
+            CommandHandler("empresas", cmd_empresas),
+        ],
         allow_reentry=True,
     )
 
@@ -159,7 +162,10 @@ def get_handlers() -> list:
                 CommandHandler("pronto", finalizar_upload),
             ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar_registro)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar_registro),
+            CommandHandler("empresas", cmd_empresas),
+        ],
         allow_reentry=True,
     )
 
@@ -174,7 +180,10 @@ def get_handlers() -> list:
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, receber_imagem_bot),
             ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar_registro)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar_registro),
+            CommandHandler("empresas", cmd_empresas),
+        ],
         allow_reentry=True,
     )
 
@@ -194,7 +203,10 @@ def get_handlers() -> list:
             AGUARDANDO_FAQ_PERGUNTA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_faq_pergunta)],
             AGUARDANDO_FAQ_RESPOSTA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_faq_resposta)],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar_registro)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar_registro),
+            CommandHandler("empresas", cmd_empresas),
+        ],
         allow_reentry=True,
     )
 
@@ -210,13 +222,15 @@ def get_handlers() -> list:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receber_valor_editado),
             ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar_registro)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar_registro),
+            CommandHandler("empresas", cmd_empresas),
+        ],
     )
 
     return [
         CommandHandler("ajuda", cmd_ajuda),
         CommandHandler("meuid", cmd_meuid),
-        CommandHandler("empresas", cmd_empresas),
         CommandHandler("link", cmd_link),
         CommandHandler("painel", cmd_painel),
         CommandHandler("documentos", cmd_documentos),
@@ -246,6 +260,7 @@ def get_handlers() -> list:
         imagem_handler,
         autonomia_handler,
         editar_handler,
+        CommandHandler("empresas", cmd_empresas),
         MessageHandler(filters.Document.ALL, receber_documento_direto),
         # Handler de interação com o agente — deve ser o último
         MessageHandler(filters.TEXT & ~filters.COMMAND, interagir_com_agente),

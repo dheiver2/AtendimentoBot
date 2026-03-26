@@ -175,17 +175,41 @@ class CmdStartTests(unittest.IsolatedAsyncioTestCase):
         update = make_update(user_id=100)
         ctx = make_context()
 
-        result = await cmd_start(update, ctx)
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            result = await cmd_start(update, ctx)
 
         self.assertEqual(result, ConversationHandler.END)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("Escolha a empresa", texto)
-        self.assertIn("/registrar", texto)
+        self.assertNotIn("nome da sua empresa", texto.lower())
         teclado = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
         self.assertEqual(
             [linha[0].text for linha in teclado.inline_keyboard],
             ["Acme", "Beta"],
         )
+
+    @patch("handlers.onboarding._sincronizar_comandos_do_chat", new_callable=AsyncMock)
+    @patch("handlers.onboarding.listar_empresas", new_callable=AsyncMock)
+    @patch("handlers.onboarding.obter_empresa_do_cliente", return_value=None)
+    @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
+    @patch("handlers.onboarding._obter_payload_start", return_value=None)
+    async def test_admin_autorizado_com_empresas_ainda_inicia_onboarding(self, mock_payload, mock_admin, mock_cliente, mock_empresas, mock_sync):
+        from handlers.common import AGUARDANDO_NOME_EMPRESA
+        from handlers.onboarding import cmd_start
+
+        mock_empresas.return_value = [
+            make_empresa(empresa_id=1, nome="Acme"),
+            make_empresa(empresa_id=2, nome="Beta"),
+        ]
+        update = make_update(user_id=999)
+        ctx = make_context()
+
+        with patch.dict(os.environ, {"TELEGRAM_ADMIN_IDS": "999"}, clear=False):
+            result = await cmd_start(update, ctx)
+
+        self.assertEqual(result, AGUARDANDO_NOME_EMPRESA)
+        texto = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("nome da sua empresa", texto.lower())
 
 
 class CmdRegistrarTests(unittest.IsolatedAsyncioTestCase):
@@ -235,10 +259,11 @@ class CmdEmpresasTests(unittest.IsolatedAsyncioTestCase):
             make_empresa(empresa_id=2, nome="Beta"),
         ]
         update = make_update("/empresas")
-        ctx = make_context()
+        ctx = make_context(user_data={"nome_empresa": "Rascunho", "campo_editando": "nome"})
 
-        await cmd_empresas(update, ctx)
+        result = await cmd_empresas(update, ctx)
 
+        self.assertEqual(result, ConversationHandler.END)
         texto = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("Atendimento atual: Acme", texto)
         teclado = update.effective_message.reply_text.call_args.kwargs["reply_markup"]
@@ -247,6 +272,8 @@ class CmdEmpresasTests(unittest.IsolatedAsyncioTestCase):
             ["Acme", "Beta"],
         )
         mock_sync.assert_awaited_once_with(update, ctx, "cliente")
+        self.assertNotIn("nome_empresa", ctx.user_data)
+        self.assertNotIn("campo_editando", ctx.user_data)
 
     @patch("handlers.onboarding.obter_empresa_por_admin", return_value=None)
     @patch("handlers.onboarding.obter_empresa_por_id")

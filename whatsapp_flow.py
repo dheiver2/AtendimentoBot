@@ -1287,13 +1287,13 @@ async def _cmd_start(
             )
         ]
 
-    if payload and usa_bootstrap_owner_chat_padrao and not empresa_admin:
+    if payload and usa_bootstrap_owner_chat_padrao and not empresa_admin and not empresa_cliente:
         return _iniciar_onboarding_admin(
             session,
             prefixo="🔒 Este numero conectado como admin nao entra pelo link do cliente.",
         )
 
-    if not payload and pode_iniciar_admin_sem_link and not empresa_admin:
+    if not payload and pode_iniciar_admin_sem_link and not empresa_admin and not empresa_cliente:
         return _iniciar_onboarding_admin(session)
 
     if payload:

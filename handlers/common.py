@@ -102,7 +102,7 @@ def _mensagem_admin_telegram_nao_configurado(user_id: int) -> str:
     if _pode_iniciar_admin_telegram_sem_link(user_id):
         return (
             "❌ Seu agente ainda não foi configurado.\n"
-            "Use /registrar para cadastrar uma empresa ou /empresas para escolher um atendimento."
+            "Use /start para configurar uma empresa ou /empresas para escolher um atendimento."
         )
 
     return (

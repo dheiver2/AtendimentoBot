@@ -44,6 +44,7 @@ class InteragirComAgenteTests(unittest.IsolatedAsyncioTestCase):
         await interagir_com_agente(update, ctx)
         texto = update.message.reply_text.call_args[0][0]
         self.assertIn("não está configurado", texto)
+        self.assertIn("/start", texto)
         self.assertIn("/empresas", texto)
 
     @patch("handlers.agent.verificar_rate_limit", return_value=None)

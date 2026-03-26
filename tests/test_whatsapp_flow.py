@@ -64,6 +64,48 @@ class WhatsAppFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(actions), 1)
         self.assertIn("nome da sua empresa", actions[0]["text"].lower())
 
+    async def test_start_cliente_existente_numero_autorizado_reabre_atendimento(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        empresa = make_empresa(nome="Acme")
+        with patch.dict(os.environ, {"WHATSAPP_ADMIN_NUMBERS": "5511888888888"}, clear=False):
+            with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+                with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=empresa):
+                    with patch(
+                        "whatsapp_flow._make_welcome_actions",
+                        return_value=[{"type": "text", "text": "bem-vindo Acme"}],
+                    ) as mock_welcome:
+                        actions = await processar_mensagem_whatsapp(
+                            sender="5511888888888@c.us",
+                            text="/start",
+                            message_type="chat",
+                            resolve_default_company=AsyncMock(return_value=None),
+                        )
+
+        mock_welcome.assert_called_once_with(empresa, unittest.mock.ANY)
+        self.assertEqual(actions, [{"type": "text", "text": "bem-vindo Acme"}])
+
+    async def test_start_cliente_existente_owner_chat_reabre_atendimento(self):
+        from whatsapp_flow import processar_mensagem_whatsapp
+
+        empresa = make_empresa(nome="Acme")
+        with patch("whatsapp_flow.obter_empresa_por_admin", new_callable=AsyncMock, return_value=None):
+            with patch("whatsapp_flow.obter_empresa_do_cliente", new_callable=AsyncMock, return_value=empresa):
+                with patch(
+                    "whatsapp_flow._make_welcome_actions",
+                    return_value=[{"type": "text", "text": "bem-vindo owner"}],
+                ) as mock_welcome:
+                    actions = await processar_mensagem_whatsapp(
+                        sender="5511999999999@c.us",
+                        text="/start",
+                        message_type="chat",
+                        is_owner_chat=True,
+                        resolve_default_company=AsyncMock(return_value=None),
+                    )
+
+        mock_welcome.assert_called_once_with(empresa, unittest.mock.ANY)
+        self.assertEqual(actions, [{"type": "text", "text": "bem-vindo owner"}])
+
     async def test_start_owner_chat_com_lista_configurada_pode_usar_token_cliente(self):
         from whatsapp_flow import processar_mensagem_whatsapp
 
